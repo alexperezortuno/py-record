@@ -149,8 +149,8 @@ def transcript_local(audio_path):
 # =====================================================
 # ETAPA 3 — RESUMEN
 # =====================================================
-def resume_openai(transcripcion_path):
-    texto = open(transcripcion_path).read()
+def resume_openai(transcription_path):
+    texto = open(transcription_path).read()
     client = OpenAI()
     print("🧩 Generando resumen con OpenAI...")
     prompt = f"""
@@ -171,23 +171,23 @@ def resume_openai(transcripcion_path):
         ]
     )
     resumen = completion.choices[0].message.content
-    salida = transcripcion_path.replace(".txt", "_resumen.txt")
+    salida = transcription_path.replace(".txt", "_resumen.txt")
     with open(salida, "w") as f:
         f.write(resumen)
     return salida
 
 
-def resume_local(transcripcion_path):
+def resume_local(transcription_path):
     from transformers import pipeline
     print("🧩 Generando resumen local...")
     summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-    texto = open(transcripcion_path).read()
+    texto = open(transcription_path).read()
     fragmentos = [texto[i:i+3000] for i in range(0, len(texto), 3000)]
     resumenes = []
     for frag in fragmentos:
         resumen = summarizer(frag, max_length=300, min_length=80, do_sample=False)
         resumenes.append(resumen[0]['summary_text'])
-    salida = transcripcion_path.replace(".txt", "_resume_local.txt")
+    salida = transcription_path.replace(".txt", "_resume_local.txt")
     with open(salida, "w") as f:
         f.write("\n\n".join(resumenes))
     return salida
@@ -214,8 +214,8 @@ def action_transcript(args):
 
 def action_process(args):
     create_table()
-    audio_path = record_audio()
-    transcripcion_path = transcript_openai(audio_path) if args.modo == "online" else transcribir_local(audio_path)
+    audio_path = record_audio(args)
+    transcripcion_path = transcript_openai(audio_path) if args.modo == "online" else transcript_local(audio_path)
     resumen_path = resume_openai(transcripcion_path) if args.modo == "online" else resume_local(transcripcion_path)
     nombre_base = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = export_markdown(nombre_base, audio_path, transcripcion_path, resumen_path)
