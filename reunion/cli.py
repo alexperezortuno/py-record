@@ -231,11 +231,13 @@ def action_process(args):
 # CLI PRINCIPAL
 # =====================================================
 def main():
+    default_monitor: str = os.getenv("DEFAULT_MONITOR", "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor")
+    default_mic: str = os.getenv("DEFAULT_MIC", "alsa_input.usb-Logitech_MIC-00.mono-fallback")
     parser = argparse.ArgumentParser(prog="reunion", description="Asistente CLI para grabar y transcribir reuniones.")
     subparsers = parser.add_subparsers(dest="action", required=True)
     p1 = subparsers.add_parser("record", help="Graba solo el audio hasta Ctrl+C.")
-    p1.add_argument("--monitor", default="alsa_output.pci-0000_00_1f.3.analog-stereo.monitor", help="Record device for audio output")
-    p1.add_argument("--mic", default="alsa_input.usb-Logitech_MIC-00.mono-fallback", help="Listen device for audio input")
+    p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
+    p1.add_argument("--mic", default=default_mic, help="Listen device for audio input")
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe y resume un audio grabado.")
