@@ -385,6 +385,9 @@ def main():
     default_mic: str = os.getenv("DEFAULT_MIC", "alsa_input.usb-Logitech_MIC-00.mono-fallback")
     default_system_prompt: str = os.getenv("SYSTEM_PROMPT", "You are an expert meeting summary assistant.")
     parser = argparse.ArgumentParser(prog="meeting", description="CLI wizard to record and transcribe meetings.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+
     subparsers = parser.add_subparsers(dest="action", required=True)
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
     p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
