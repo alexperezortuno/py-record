@@ -124,6 +124,7 @@ def record_audio(args):
     proceso.wait()
     return response
 
+
 def transcript_openai(audio_path):
     """
     Transcribes audio files using OpenAI's transcription API.
@@ -351,8 +352,9 @@ def action_diarize(args):
         file path (str) and the target language (`lang`).
     :type args: argparse.Namespace
     """
+    huggingface_token: str = os.getenv('HUGGINGFACE_TOKEN', None)
     diarizer = Diarizer()
-    diarizer.transcribe_with_diarization(args.audio, lang=args.lang)
+    diarizer.transcribe_with_diarization(args.audio, lang=args.lang, hf_token=huggingface_token)
 
 
 def main():
