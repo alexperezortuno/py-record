@@ -321,6 +321,18 @@ def action_process(args):
     logger.info(f"\n✅ Everything ready:\n📄 Markdown: {markdown_path}\n💾 DB: {DB_PATH}\n")
 
 def action_diarize(args):
+    """
+    Executes speaker diarization on the provided audio input.
+
+    This function facilitates audio diarization by instantiating
+    a `Diarizer` object and calling its diarization method on
+    the provided audio file while supporting user-specified
+    language settings.
+
+    :param args: Command-line arguments containing the `audio`
+        file path (str) and the target language (`lang`).
+    :type args: argparse.Namespace
+    """
     diarizer = Diarizer()
     diarizer.transcribe_with_diarization(args.audio, lang=args.lang)
 
