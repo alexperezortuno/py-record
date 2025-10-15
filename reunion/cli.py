@@ -210,21 +210,21 @@ def action_transcript(args):
         print("❌ Debes especificar un archivo con --audio.")
         sys.exit(1)
     audio_path = args.audio
-    transcripcion_path = transcript_openai(audio_path) if args.modo == "online" else transcript_local(audio_path)
-    resumen_path = resume_openai(transcripcion_path) if args.modo == "online" else resume_local(transcripcion_path)
+    transcripcion_path = transcript_openai(audio_path) if args.mode == "online" else transcript_local(audio_path)
+    resumen_path = resume_openai(transcripcion_path) if args.mode == "online" else resume_local(transcripcion_path)
     nombre_base = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = export_markdown(nombre_base, audio_path, transcripcion_path, resumen_path)
-    registrar_en_db(audio_path, transcripcion_path, resumen_path, markdown_path, args.modo)
+    registrar_en_db(audio_path, transcripcion_path, resumen_path, markdown_path, args.mode)
     print(f"\n✅ Transcripción completa:\n📄 {markdown_path}\n💾 DB: {DB_PATH}\n")
 
 def action_process(args):
     create_table()
     audio_path = record_audio(args)
-    transcripcion_path = transcript_openai(audio_path) if args.modo == "online" else transcript_local(audio_path)
-    resumen_path = resume_openai(transcripcion_path) if args.modo == "online" else resume_local(transcripcion_path)
+    transcripcion_path = transcript_openai(audio_path) if args.mode == "online" else transcript_local(audio_path)
+    resumen_path = resume_openai(transcripcion_path) if args.mode == "online" else resume_local(transcripcion_path)
     nombre_base = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = export_markdown(nombre_base, audio_path, transcripcion_path, resumen_path)
-    registrar_en_db(audio_path, transcripcion_path, resumen_path, markdown_path, args.modo)
+    registrar_en_db(audio_path, transcripcion_path, resumen_path, markdown_path, args.mode)
     print(f"\n✅ Todo listo:\n📄 Markdown: {markdown_path}\n💾 DB: {DB_PATH}\n")
 
 # =====================================================
