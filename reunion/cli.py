@@ -125,7 +125,12 @@ def record_audio(args):
 # ETAPA 2 — TRANSCRIPCIÓN
 # =====================================================
 def transcript_openai(audio_path):
-    client = OpenAI()
+    if not os.path.exists(audio_path):
+        return None
+    if os.getenv("OPENAI_API_KEY") is None:
+        client = OpenAI()
+    else:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     print("🧠 Transcribiendo con OpenAI...")
     with open(audio_path, "rb") as f:
         result = client.audio.transcriptions.create(model=MODEL_OPENAI, file=f)
