@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="reunion-cli",
+    name="meeting-cli",
     version="1.0.0",
     packages=find_packages(),
     install_requires=[
@@ -13,7 +13,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "reunion=reunion.cli:main",
+            "meeting=meeting.cli:main",
         ],
     },
     author="Alexander Pérez Ortuño",
@@ -21,6 +21,6 @@ setup(
     description="Asistente de reuniones: graba, transcribe y resume tus reuniones automáticamente.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/AlexPerezOrtuño/reunion-cli",
+    url="https://github.com/AlexPerezOrtuño/meeting-cli",
     python_requires=">=3.9",
 )
