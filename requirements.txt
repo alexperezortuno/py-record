@@ -2,3 +2,4 @@ openai==2.3.0
 faster-whisper==1.2.0
 transformers==4.57.1
 torch==2.8.0
+sentencepiece==0.2.1
