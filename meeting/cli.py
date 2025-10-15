@@ -10,6 +10,9 @@ from openai import OpenAI
 from pydub import AudioSegment
 from pydub.utils import make_chunks
 
+from meeting.diarization import Diarizer
+from meeting.logger import logger_configuration
+
 # Configuración general
 DB_PATH = "meetings.db"
 OUTPUT_DIR = os.path.expanduser("~/meetings")
@@ -93,8 +96,8 @@ def record_audio(args):
     monitor = args.monitor
     mic = args.mic
 
-    print(f"🎙️ Recording audio in: {response}")
-    print("🧩 Press Ctrl+C to stop recording.\n")
+    logger.info(f"🎙️ Recording audio in: {response}")
+    logger.info("🧩 Press Ctrl+C to stop recording.\n")
 
     cmd = [
         "ffmpeg",
@@ -109,7 +112,7 @@ def record_audio(args):
     proceso = subprocess.Popen(cmd)
 
     def stop_record(sig, frame):
-        print("\n🛑 Recording stopped by user.")
+        logger.info("\n🛑 Recording stopped by user.")
         proceso.terminate()
         try:
             proceso.wait(timeout=3)
@@ -143,7 +146,7 @@ def transcript_openai(audio_path):
         client = OpenAI()
     else:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    print("🧠 Transcribing with OpenAI...")
+    logger.info("🧠 Transcribing with OpenAI...")
 
     # Chunk the audio if it exceeds the limit
     audio = AudioSegment.from_file(audio_path)
@@ -152,7 +155,7 @@ def transcript_openai(audio_path):
 
     chunks = []
     if audio_length_seconds > max_duration:
-        print(f"⚠️ Audio file exceeds duration limit ({max_duration}s), splitting into parts...")
+        logger.info(f"⚠️ Audio file exceeds duration limit ({max_duration}s), splitting into parts...")
         chunks = make_chunks(audio, max_duration * 1000)  # Convert seconds to milliseconds
     else:
         chunks = [audio]
@@ -161,7 +164,7 @@ def transcript_openai(audio_path):
     for i, chunk in enumerate(chunks):
         tmp_chunk_path = f"{audio_path}_chunk{i}.mp3"
         chunk.export(tmp_chunk_path, format="mp3")  # Export chunk to disk
-        print(f"⬆️ Transcribing segment {i + 1}/{len(chunks)}...")
+        logger.info(f"⬆️ Transcribing segment {i + 1}/{len(chunks)}...")
         with open(tmp_chunk_path, "rb") as f:
             result = client.audio.transcriptions.create(model=MODEL_OPENAI, file=f)
             transcriptions.append(result.text)
@@ -187,7 +190,7 @@ def transcript_local(audio_path):
         str: The path to the output transcription text file.
     """
     from faster_whisper import WhisperModel
-    print("🧠 Transcribing locally...")
+    logger.info("🧠 Transcribing locally...")
     modelo = WhisperModel(MODEL_LOCAL, device="cpu")
     segments, info = modelo.transcribe(audio_path, beam_size=5)
     salida = audio_path.replace(".mp3", "_transcription_local.txt")
@@ -219,7 +222,7 @@ def summary_openai(transcription_path, args):
     """
     texto = open(transcription_path).read()
     client = OpenAI()
-    print("🧩 Generating summary with OpenAI...")
+    logger.info("🧩 Generating summary with OpenAI...")
     prompt = f"""
     Analyze this transcript and deliver: 
     1. A general summary (max 5 paragraphs) 
@@ -258,17 +261,17 @@ def summary_local(transcription_path):
         The file path of the newly created file containing the summarized text.
     """
     from transformers import pipeline
-    print("🧩 Generando resumen local...")
+    logger.info("🧩 Generating summary locally..")
     summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-    texto = open(transcription_path).read()
-    fragmentos = [texto[i:i+3000] for i in range(0, len(texto), 3000)]
-    resumenes = []
-    for frag in fragmentos:
-        resumen = summarizer(frag, max_length=300, min_length=80, do_sample=False)
-        resumenes.append(resumen[0]['summary_text'])
-    salida = transcription_path.replace(".txt", "_resume_local.txt")
+    text = open(transcription_path).read()
+    fragments = [text[i:i+3000] for i in range(0, len(text), 3000)]
+    summaries = []
+    for frag in fragments:
+        summary = summarizer(frag, max_length=300, min_length=80, do_sample=False)
+        summaries.append(summary[0]['summary_text'])
+    salida = transcription_path.replace(".txt", "_summary_local.txt")
     with open(salida, "w") as f:
-        f.write("\n\n".join(resumenes))
+        f.write("\n\n".join(summaries))
     return salida
 
 
@@ -286,14 +289,14 @@ def action_record(args):
     """
     create_table()
     audio_path = record_audio(args)
-    print(f"\n✅ Recording saved in {audio_path}")
-    print(f"You can later transcribe with:\n   meeting transcript --mode local --audio {audio_path}\n")
+    logger.info(f"\n✅ Recording saved in {audio_path}")
+    logger.info(f"You can later transcribe with:\n   meeting transcript --mode local --audio {audio_path}\n")
 
 
 def action_transcript(args):
     create_table()
     if not args.audio:
-        print("❌ You must specify a file with --audio.")
+        logger.error("❌ You must specify a file with --audio.")
         sys.exit(1)
     audio_path = args.audio
     transcript_path = transcript_openai(audio_path) if args.mode == "online" else transcript_local(audio_path)
@@ -303,7 +306,7 @@ def action_transcript(args):
     if args.export_md:
         markdown_path = export_markdown(base_name, audio_path, transcript_path, summary_path)
     save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.mode)
-    print(f"\n✅ Full transcript:\n📄 {markdown_path}\n💾 DB: {DB_PATH}\n")
+    logger.info(f"\n✅ Full transcript:\n📄 {markdown_path}\n💾 DB: {DB_PATH}\n")
 
 def action_process(args):
     create_table()
@@ -315,12 +318,39 @@ def action_process(args):
     if args.export_md:
         markdown_path = export_markdown(base_name, audio_path, transcript_path, summary_path)
     save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.mode)
-    print(f"\n✅ Everything ready:\n📄 Markdown: {markdown_path}\n💾 DB: {DB_PATH}\n")
+    logger.info(f"\n✅ Everything ready:\n📄 Markdown: {markdown_path}\n💾 DB: {DB_PATH}\n")
 
-# =====================================================
-# CLI PRINCIPAL
-# =====================================================
+def action_diarize(args):
+    diarizer = Diarizer()
+    diarizer.transcribe_with_diarization(args.audio, lang=args.lang)
+
+
 def main():
+    """
+    Main entry point for the meeting CLI application.
+
+    This function initializes the command-line interface (CLI) for the meeting
+    application. It sets up argument parsing, manages subcommands, and runs the
+    appropriate function based on user input. The application supports three
+    primary operations: 'record' for audio recording, 'transcript' for audio
+    transcription and summarization, and 'process' for combining recording and
+    transcription into a unified workflow. Each subcommand is configured with its
+    respective arguments.
+
+    Subcommands:
+    - record: Records only audio until manually interrupted.
+    - transcript: Transcribes and summarizes a recorded audio file.
+    - process: Performs recording, transcription, and summarization in a single
+      operation.
+
+    Environment variables:
+    - DEFAULT_MONITOR: Default device for recording audio output.
+    - DEFAULT_MIC: Default device for listening to audio input.
+    - SYSTEM_PROMPT: Default system prompt for transcription summarization.
+
+    :raises SystemExit: If invalid arguments are provided or an unexpected error
+        occurs during execution.
+    """
     default_monitor: str = os.getenv("DEFAULT_MONITOR", "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor")
     default_mic: str = os.getenv("DEFAULT_MIC", "alsa_input.usb-Logitech_MIC-00.mono-fallback")
     default_system_prompt: str = os.getenv("SYSTEM_PROMPT", "You are an expert meeting summary assistant.")
@@ -344,7 +374,14 @@ def main():
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p3.set_defaults(func=action_process)
 
+    p4 = subparsers.add_parser("diarize", help="Transcribe and identify speakers (diarization).")
+    p4.add_argument("-a", "--audio", required=True, help="Path to the file .mp3")
+    p4.add_argument("-l", "--lang", default="es", help="Language code (e.g., es, en)")
+    p4.set_defaults(func=action_diarize)
+
     args = parser.parse_args()
+    global logger
+    logger = logger_configuration(verbose=args.verbose, debug=args.debug)
     args.func(args)
 
 
