@@ -7,6 +7,8 @@ import signal
 import sqlite3
 from datetime import datetime
 from openai import OpenAI
+from pydub import AudioSegment
+from pydub.utils import make_chunks
 
 # Configuración general
 DB_PATH = "reuniones.db"
@@ -132,11 +134,31 @@ def transcript_openai(audio_path):
     else:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     print("🧠 Transcribiendo con OpenAI...")
-    with open(audio_path, "rb") as f:
-        result = client.audio.transcriptions.create(model=MODEL_OPENAI, file=f)
+
+    # Chunk the audio if it exceeds the limit
+    audio = AudioSegment.from_file(audio_path)
+    audio_length_seconds = len(audio) / 1000  # Convert milliseconds to seconds
+    max_duration = 1400  # Maximum duration in seconds per OpenAI API limit
+
+    chunks = []
+    if audio_length_seconds > max_duration:
+        print(f"⚠️ El archivo de audio excede el límite de duración ({max_duration}s), dividiendo en partes...")
+        chunks = make_chunks(audio, max_duration * 1000)  # Convert seconds to milliseconds
+    else:
+        chunks = [audio]
+
+    transcriptions = []
+    for i, chunk in enumerate(chunks):
+        tmp_chunk_path = f"{audio_path}_chunk{i}.mp3"
+        chunk.export(tmp_chunk_path, format="mp3")  # Export chunk to disk
+        print(f"⬆️ Transcribiendo segmento {i + 1}/{len(chunks)}...")
+        with open(tmp_chunk_path, "rb") as f:
+            result = client.audio.transcriptions.create(model=MODEL_OPENAI, file=f)
+            transcriptions.append(result.text)
+
     salida = audio_path.replace(".mp3", "_transcripcion.txt")
     with open(salida, "w") as out:
-        out.write(result.text)
+        out.write("\n".join(transcriptions))
     return salida
 
 
