@@ -294,6 +294,14 @@ def action_record(args):
 
 
 def action_transcript(args):
+    """
+    Processes an audio file to generate its transcript and summary, then exports
+    and saves the results according to the specified arguments.
+
+    :param args: Parsed command-line arguments containing options like audio file
+        path, online or offline processing mode, and export preferences.
+    :return: None
+    """
     create_table()
     if not args.audio:
         logger.error("❌ You must specify a file with --audio.")
@@ -309,6 +317,16 @@ def action_transcript(args):
     logger.info(f"\n✅ Full transcript:\n📄 {markdown_path}\n💾 DB: {DB_PATH}\n")
 
 def action_process(args):
+    """
+    Executes the process to record audio, transcribe it, generate a summary, optionally export
+    to a markdown file, and save the results into a database. The process flow may vary depending
+    on the mode (online or offline) specified in the arguments.
+
+    :param args: User-defined arguments containing multiple flags and settings to control the process.
+        - `mode`: Determines the mode of operation. Can be "online" or "offline".
+        - `export_md`: Boolean flag to specify whether a markdown file is to be exported or not.
+    :return: None
+    """
     create_table()
     audio_path = record_audio(args)
     transcript_path = transcript_openai(audio_path) if args.mode == "online" else transcript_local(audio_path)
