@@ -187,7 +187,7 @@ def resume_local(transcripcion_path):
     for frag in fragmentos:
         resumen = summarizer(frag, max_length=300, min_length=80, do_sample=False)
         resumenes.append(resumen[0]['summary_text'])
-    salida = transcripcion_path.replace(".txt", "_resumen_local.txt")
+    salida = transcripcion_path.replace(".txt", "_resume_local.txt")
     with open(salida, "w") as f:
         f.write("\n\n".join(resumenes))
     return salida
@@ -197,7 +197,7 @@ def action_record(args):
     create_table()
     audio_path = record_audio(args)
     print(f"\n✅ Grabación guardada en {audio_path}")
-    print(f"Puedes transcribir luego con:\n   reunion transcribir --modo local --audio {audio_path}\n")
+    print(f"Puedes transcribir luego con:\n   reunion transcript --mode local --audio {audio_path}\n")
 
 def action_transcript(args):
     create_table()
@@ -205,7 +205,7 @@ def action_transcript(args):
         print("❌ Debes especificar un archivo con --audio.")
         sys.exit(1)
     audio_path = args.audio
-    transcripcion_path = transcript_openai(audio_path) if args.modo == "online" else transcribir_local(audio_path)
+    transcripcion_path = transcript_openai(audio_path) if args.modo == "online" else transcript_local(audio_path)
     resumen_path = resume_openai(transcripcion_path) if args.modo == "online" else resume_local(transcripcion_path)
     nombre_base = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = export_markdown(nombre_base, audio_path, transcripcion_path, resumen_path)
