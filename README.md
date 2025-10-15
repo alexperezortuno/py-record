@@ -11,6 +11,17 @@ sudo apt update
 sudo apt install ffmpeg pavucontrol cmake pkg-config libsentencepiece-dev -y
 ```
 
+in conda or env you need first this
+
+```shell
+pip install -U pip setuptools wheel
+```
+
+```shell
+pip install -r requirements.txt
+```
+
+
 ### How to get audio devices
 
 ```shell
