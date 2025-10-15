@@ -138,7 +138,7 @@ def transcript_openai(audio_path):
     # Chunk the audio if it exceeds the limit
     audio = AudioSegment.from_file(audio_path)
     audio_length_seconds = len(audio) / 1000  # Convert milliseconds to seconds
-    max_duration = 1400  # Maximum duration in seconds per OpenAI API limit
+    max_duration = 1350  # Maximum duration in seconds per OpenAI API limit
 
     chunks = []
     if audio_length_seconds > max_duration:
