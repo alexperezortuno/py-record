@@ -101,7 +101,7 @@ def split_audio(audio_path, duracion=600):
         "-f", "segment", "-segment_time", str(duracion),
         "-c", "copy", output
     ])
-    chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base + "_chunk_")])
+    chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base+"_chunk_")])
     return chunks
 
 
@@ -310,11 +310,11 @@ def summary_openai(transcription_path, args):
             {"role": "user", "content": prompt}
         ]
     )
-    resumen = completion.choices[0].message.content
-    salida = transcription_path.replace(".txt", "summary.txt")
-    with open(salida, "w") as f:
-        f.write(resumen)
-    return salida
+    summary = completion.choices[0].message.content
+    result = transcription_path.replace(".txt", "summary.txt")
+    with open(result, "w") as f:
+        f.write(summary)
+    return result
 
 
 def summary_local(transcription_path):
@@ -334,7 +334,7 @@ def summary_local(transcription_path):
     logger.info("🧩 Generating summary locally..")
     summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
     text = open(transcription_path).read()
-    fragments = [text[i:i + 3000] for i in range(0, len(text), 3000)]
+    fragments = [text[i:i+3000] for i in range(0, len(text), 3000)]
     summaries = []
     for frag in fragments:
         summary = summarizer(frag, max_length=300, min_length=80, do_sample=False)
@@ -402,7 +402,7 @@ def summary_gemini(transcription_path, args):
     with open(output, "w", encoding="utf-8") as f:
         f.write(summary)
 
-    logger.info(f"✅ Resumen generado con Gemini: {output}")
+    logger.info(f"✅ Summary generated with Gemini: {output}")
     return output
 
 
