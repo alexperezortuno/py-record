@@ -52,8 +52,11 @@ def create_table():
 def export_markdown(base_name, audio, transcription, summary):
     markdown_path = f"{base_name}.md"
 
-    texto_transcripcion = open(transcription).read() if os.path.exists(transcription) else ""
+    text_transcription = open(transcription).read() if os.path.exists(transcription) else ""
     summary_text = open(summary).read() if os.path.exists(summary) else ""
+
+    text_summary = summary_text.strip() if summary_text.strip() else "Not available."
+    text_transcription = text_transcription.strip() if text_transcription.strip() else "Not available."
 
     md_content = f"""# 🗓️ Meeting — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -64,12 +67,12 @@ def export_markdown(base_name, audio, transcription, summary):
 ---
 
 ## 🧠 General summary
-{text_resumen if (text_resumen := summary_text.strip()) else "Not available."}
+{text_summary}
 
 ---
 
 ## 🗣️ Full transcript
-{text_transcripcion if (text_transcripcion := texto_transcripcion.strip()) else "Not available."}
+{text_transcription}
 """
     with open(markdown_path, "w") as f:
         f.write(md_content)
@@ -251,7 +254,7 @@ def transcript_local(audio_path):
     from faster_whisper import WhisperModel
     logger.info("🧠 Transcribing locally...")
     modelo = WhisperModel(MODEL_LOCAL, device="cpu")
-    segments, info = modelo.transcribe(audio_path, beam_size=5)
+    segments, _ = modelo.transcribe(audio_path, beam_size=5)
     salida = audio_path.replace(".mp3", "_transcription_local.txt")
     with open(salida, "w") as out:
         for seg in segments:
