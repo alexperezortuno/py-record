@@ -310,11 +310,11 @@ def summary_openai(transcription_path, args):
             {"role": "user", "content": prompt}
         ]
     )
-    resumen = completion.choices[0].message.content
-    salida = transcription_path.replace(".txt", "summary.txt")
-    with open(salida, "w") as f:
-        f.write(resumen)
-    return salida
+    summary = completion.choices[0].message.content
+    result = transcription_path.replace(".txt", "summary.txt")
+    with open(result, "w") as f:
+        f.write(summary)
+    return result
 
 
 def summary_local(transcription_path):
@@ -402,7 +402,7 @@ def summary_gemini(transcription_path, args):
     with open(output, "w", encoding="utf-8") as f:
         f.write(summary)
 
-    logger.info(f"✅ Resumen generado con Gemini: {output}")
+    logger.info(f"✅ Summary generated with Gemini: {output}")
     return output
 
 
