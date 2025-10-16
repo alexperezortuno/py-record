@@ -23,6 +23,7 @@ MODEL_OPENAI = "gpt-4o-mini-transcribe"
 MODEL_GEMINI = "gemini-2.5-flash"
 MODEL_SUMMARY = "gpt-4o"  # o gpt-5 si tienes acceso
 
+
 # =====================================================
 # UTILITIES
 # =====================================================
@@ -51,8 +52,11 @@ def create_table():
 def export_markdown(base_name, audio, transcription, summary):
     markdown_path = f"{base_name}.md"
 
-    texto_transcripcion = open(transcription).read() if os.path.exists(transcription) else ""
-    summary_text= open(summary).read() if os.path.exists(summary) else ""
+    text_transcription = open(transcription).read() if os.path.exists(transcription) else ""
+    summary_text = open(summary).read() if os.path.exists(summary) else ""
+
+    text_summary = summary_text.strip() if summary_text.strip() else "Not available."
+    text_transcription = text_transcription.strip() if text_transcription.strip() else "Not available."
 
     md_content = f"""# 🗓️ Meeting — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -63,12 +67,12 @@ def export_markdown(base_name, audio, transcription, summary):
 ---
 
 ## 🧠 General summary
-{text_resumen if (text_resumen := summary_text.strip()) else "Not available."}
+{text_summary}
 
 ---
 
 ## 🗣️ Full transcript
-{text_transcripcion if (text_transcripcion := texto_transcripcion.strip()) else "Not available."}
+{text_transcription}
 """
     with open(markdown_path, "w") as f:
         f.write(md_content)
@@ -97,7 +101,7 @@ def split_audio(audio_path, duracion=600):
         "-f", "segment", "-segment_time", str(duracion),
         "-c", "copy", output
     ])
-    chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base+"_chunk_")])
+    chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base + "_chunk_")])
     return chunks
 
 
@@ -250,7 +254,7 @@ def transcript_local(audio_path):
     from faster_whisper import WhisperModel
     logger.info("🧠 Transcribing locally...")
     modelo = WhisperModel(MODEL_LOCAL, device="cpu")
-    segments, info = modelo.transcribe(audio_path, beam_size=5)
+    segments, _ = modelo.transcribe(audio_path, beam_size=5)
     salida = audio_path.replace(".mp3", "_transcription_local.txt")
     with open(salida, "w") as out:
         for seg in segments:
@@ -281,14 +285,22 @@ def summary_openai(transcription_path, args):
     texto = open(transcription_path).read()
     client = OpenAI()
     logger.info("🧩 Generating summary with OpenAI...")
-    prompt = f"""
-    Analyze this transcript and deliver: 
-    1. A general summary (max 5 paragraphs) 
-    2. List of key points 
-    3. Decisions or tasks with those responsible 
-    4. Pending issues or next steps 
+    p: str = "Analyze this transcript and deliver:\n"
+    "1. A general summary (max 5 paragraphs)\n"
+    "2. List of key points\n"
+    "3. Decisions or tasks with those responsible\n"
+    "4. Pending issues or next steps\n\n"
+    "Transcription: "
 
-    Transcription:
+    if args.lang == "es":
+        p = "Analice esta transcripción y presente:\n"
+        "1. Un resumen general (máximo 5 párrafos)\n"
+        "2. Lista de puntos clave\n"
+        "3. Decisiones o tareas con los responsables\n"
+        "4. Asuntos pendientes o próximos pasos\n\n"
+        "Transcripción: "
+    prompt = f"""
+    {p}
     {texto[:15000]}
     """
     completion = client.chat.completions.create(
@@ -299,7 +311,7 @@ def summary_openai(transcription_path, args):
         ]
     )
     resumen = completion.choices[0].message.content
-    salida = transcription_path.replace(".txt", "_resumen.txt")
+    salida = transcription_path.replace(".txt", "summary.txt")
     with open(salida, "w") as f:
         f.write(resumen)
     return salida
@@ -322,7 +334,7 @@ def summary_local(transcription_path):
     logger.info("🧩 Generating summary locally..")
     summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
     text = open(transcription_path).read()
-    fragments = [text[i:i+3000] for i in range(0, len(text), 3000)]
+    fragments = [text[i:i + 3000] for i in range(0, len(text), 3000)]
     summaries = []
     for frag in fragments:
         summary = summarizer(frag, max_length=300, min_length=80, do_sample=False)
@@ -337,7 +349,7 @@ def summary_gemini(transcription_path, args):
     # Check if the provided transcription file exists
     if not os.path.exists(transcription_path):
         raise FileNotFoundError(f"File not found: {transcription_path}")
-    
+
     # Read the transcription content
     with open(transcription_path, 'r', encoding='utf-8') as file:
         transcription_content = file.read()
@@ -356,16 +368,27 @@ def summary_gemini(transcription_path, args):
     # Inicializar cliente
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", None))
 
-    # Crear el prompt
-    prompt = (
-        "Analiza la siguiente transcripción de una reunión y genera un resumen estructurado "
+    p: str = "Analyze the following meeting transcript and generate a structured summary"
+    "in Markdown format with the following sections:\n\n"
+    "## 🧠 General Summary\n"
+    "## 📌 Key Points\n"
+    "## 🧩 Decisions Made\n"
+    "## 🗓️ Tasks and Responsibilities\n"
+    "## 🚀 Next Steps\n\n"
+    "Transcript:\n"
+
+    if args.lang == "es":
+        p = "Analiza la siguiente transcripción de una reunión y genera un resumen estructurado "
         "en formato Markdown con las siguientes secciones:\n\n"
         "## 🧠 Resumen general\n"
         "## 📌 Puntos clave\n"
         "## 🧩 Decisiones tomadas\n"
         "## 🗓️ Tareas y responsables\n"
         "## 🚀 Próximos pasos\n\n"
-        "Transcripción:\n" + text[:25000]  # limitar a 25k chars
+        "Transcripción:\n"
+    # Crear el prompt
+    prompt = (
+            p + text[:25000]  # limitar a 25k chars
     )
 
     # Enviar a Gemini
@@ -462,7 +485,6 @@ def action_transcript(args):
         if args.export_md:
             summary_path = summary_local(transcript_path)
 
-    #base_name = os.path.basename(audio_path).replace(".mp3", "")
     base_name = os.path.splitext(audio_path)[0]
     markdown_path = ""
     if args.export_md:
@@ -548,12 +570,15 @@ def main():
     parser = argparse.ArgumentParser(prog="meeting", description="CLI wizard to record and transcribe meetings.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    help_desc_env: str = "Path to the .env file containing environment variables. By default, it looks in the root directory."
+    help_desc_lang: str = "Language code (e.g., es, en)"
 
     subparsers = parser.add_subparsers(dest="action", required=True)
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
     p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
     p1.add_argument("--mic", default=default_mic, help="Listen device for audio input")
-    p1.add_argument("--env", default=None, help="load environment variables from file")
+    p1.add_argument("--env", default=None, help=help_desc_env)
+    p1.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe and summarize recorded audio.")
@@ -561,20 +586,22 @@ def main():
     p2.add_argument("-a", "--audio", required=True, help="Audio file path .mp3")
     p2.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p2.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
-    p2.add_argument("--env", default=None, help="load environment variables from file")
+    p2.add_argument("-l", "--lang", default="en", help=help_desc_lang)
+    p2.add_argument("--env", default=None, help=help_desc_env)
     p2.set_defaults(func=action_transcript)
 
     p3 = subparsers.add_parser("process", help="Record, transcribe and summarize in a single stream.")
     p3.add_argument("-m", "--mode", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
     p3.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
-    p3.add_argument("--env", default=None, help="load environment variables from file")
+    p3.add_argument("-l", "--lang", default="en", help=help_desc_lang)
+    p3.add_argument("--env", default=None, help=help_desc_env)
     p3.set_defaults(func=action_process)
 
     p4 = subparsers.add_parser("diarize", help="Transcribe and identify speakers (diarization).")
     p4.add_argument("-a", "--audio", required=True, help="Path to the file .mp3")
-    p4.add_argument("-l", "--lang", default="es", help="Language code (e.g., es, en)")
-    p4.add_argument("--env", default=None, help="load environment variables from file")
+    p4.add_argument("-l", "--lang", default="en", help="Language code (e.g., es, en)")
+    p4.add_argument("--env", default=None, help=help_desc_env)
     p4.set_defaults(func=action_diarize)
 
     args = parser.parse_args()
