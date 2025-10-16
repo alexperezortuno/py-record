@@ -383,6 +383,34 @@ def summary_gemini(transcription_path, args):
     return output
 
 
+def load_env_file(env_path=".env"):
+    """
+    Load environment variables from a .env file.
+
+    Args:
+        env_path (str): Path to the .env file. By default, it looks in the root directory.
+
+    Returns:
+        None
+
+    Raises:
+        FileNotFoundError: if the .env file does not exist or is not accessible.
+    """
+    if not os.path.exists(env_path):
+        raise FileNotFoundError(f"The environment file was not found: {env_path}")
+
+    with open(env_path, "r") as file:
+        for line in file:
+            # Ignore comment lines and empty lines
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            # Separate key and value (format: KEY=VALUE)
+            key, value = line.split("=", 1)
+            os.environ[key.strip()] = value.strip()
+
+
 def action_record(args):
     """
     Records an audio session and provides the path where the recording is saved.
@@ -395,6 +423,8 @@ def action_record(args):
     Returns:
         None
     """
+    if args.env is not None:
+        load_env_file(args.env)
     create_table()
     audio_path = record_audio(args)
     logger.info(f"\n✅ Recording saved in {audio_path}")
@@ -410,6 +440,8 @@ def action_transcript(args):
         path, online or offline processing mode, and export preferences.
     :return: None
     """
+    if args.env is not None:
+        load_env_file(args.env)
     create_table()
     summary_path = None
 
@@ -450,6 +482,8 @@ def action_process(args):
         - `export_md`: Boolean flag to specify whether a markdown file is to be exported or not.
     :return: None
     """
+    if args.env is not None:
+        load_env_file(args.env)
     create_table()
     audio_path = record_audio(args)
     transcript_path = transcript_openai(audio_path) if args.mode == "openai" else transcript_local(audio_path)
@@ -475,6 +509,8 @@ def action_diarize(args):
         file path (str) and the target language (`lang`).
     :type args: argparse.Namespace
     """
+    if args.env is not None:
+        load_env_file(args.env)
     huggingface_token: str = os.getenv('HUGGINGFACE_TOKEN', None)
     diarizer = Diarizer()
     diarizer.transcribe_with_diarization(args.audio, lang=args.lang, hf_token=huggingface_token)
@@ -517,6 +553,7 @@ def main():
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
     p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
     p1.add_argument("--mic", default=default_mic, help="Listen device for audio input")
+    p1.add_argument("--env", default=None, help="load environment variables from file")
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe and summarize recorded audio.")
@@ -524,17 +561,20 @@ def main():
     p2.add_argument("-a", "--audio", required=True, help="Audio file path .mp3")
     p2.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p2.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
+    p2.add_argument("--env", default=None, help="load environment variables from file")
     p2.set_defaults(func=action_transcript)
 
     p3 = subparsers.add_parser("process", help="Record, transcribe and summarize in a single stream.")
     p3.add_argument("-m", "--mode", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
     p3.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
+    p3.add_argument("--env", default=None, help="load environment variables from file")
     p3.set_defaults(func=action_process)
 
     p4 = subparsers.add_parser("diarize", help="Transcribe and identify speakers (diarization).")
     p4.add_argument("-a", "--audio", required=True, help="Path to the file .mp3")
     p4.add_argument("-l", "--lang", default="es", help="Language code (e.g., es, en)")
+    p4.add_argument("--env", default=None, help="load environment variables from file")
     p4.set_defaults(func=action_diarize)
 
     args = parser.parse_args()
