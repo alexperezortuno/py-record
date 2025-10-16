@@ -567,13 +567,15 @@ def main():
     parser = argparse.ArgumentParser(prog="meeting", description="CLI wizard to record and transcribe meetings.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    help_desc_env: str = "Path to the .env file containing environment variables. By default, it looks in the root directory."
+    help_desc_lang: str = "Language code (e.g., es, en)"
 
     subparsers = parser.add_subparsers(dest="action", required=True)
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
     p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
     p1.add_argument("--mic", default=default_mic, help="Listen device for audio input")
-    p1.add_argument("--env", default=None, help="load environment variables from file")
-    p1.add_argument("-l", "--lang", default="en", help="Language code (e.g., es, en)")
+    p1.add_argument("--env", default=None, help=help_desc_env)
+    p1.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe and summarize recorded audio.")
@@ -581,22 +583,22 @@ def main():
     p2.add_argument("-a", "--audio", required=True, help="Audio file path .mp3")
     p2.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p2.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
-    p2.add_argument("-l", "--lang", default="en", help="Language code (e.g., es, en)")
-    p2.add_argument("--env", default=None, help="load environment variables from file")
+    p2.add_argument("-l", "--lang", default="en", help=help_desc_lang)
+    p2.add_argument("--env", default=None, help=help_desc_env)
     p2.set_defaults(func=action_transcript)
 
     p3 = subparsers.add_parser("process", help="Record, transcribe and summarize in a single stream.")
     p3.add_argument("-m", "--mode", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
     p3.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
-    p3.add_argument("-l", "--lang", default="en", help="Language code (e.g., es, en)")
-    p3.add_argument("--env", default=None, help="load environment variables from file")
+    p3.add_argument("-l", "--lang", default="en", help=help_desc_lang)
+    p3.add_argument("--env", default=None, help=help_desc_env)
     p3.set_defaults(func=action_process)
 
     p4 = subparsers.add_parser("diarize", help="Transcribe and identify speakers (diarization).")
     p4.add_argument("-a", "--audio", required=True, help="Path to the file .mp3")
     p4.add_argument("-l", "--lang", default="en", help="Language code (e.g., es, en)")
-    p4.add_argument("--env", default=None, help="load environment variables from file")
+    p4.add_argument("--env", default=None, help=help_desc_env)
     p4.set_defaults(func=action_diarize)
 
     args = parser.parse_args()
