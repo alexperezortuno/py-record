@@ -24,7 +24,7 @@ MODEL_GEMINI = "gemini-2.5-flash"
 MODEL_SUMMARY = "gpt-4o"  # o gpt-5 si tienes acceso
 
 # =====================================================
-# UTILIDADES
+# UTILITIES
 # =====================================================
 def create_table():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
