@@ -9,6 +9,7 @@ from datetime import datetime
 from openai import OpenAI
 from pydub import AudioSegment
 from pydub.utils import make_chunks
+from google import genai
 
 from meeting.diarization import Diarizer
 from meeting.logger import logger_configuration
@@ -16,13 +17,14 @@ from meeting.logger import logger_configuration
 # Configuración general
 DB_PATH = "meetings.db"
 OUTPUT_DIR = os.path.expanduser("~/meetings")
-MARKDOWN_DIR = "markdowns"
+MARKDOWN_DIR = os.path.expanduser("~/markdowns")
 MODEL_LOCAL = "small"  # faster-whisper
 MODEL_OPENAI = "gpt-4o-mini-transcribe"
+MODEL_GEMINI = "gemini-2.5-flash"
 MODEL_SUMMARY = "gpt-4o"  # o gpt-5 si tienes acceso
 
 # =====================================================
-# UTILIDADES
+# UTILITIES
 # =====================================================
 def create_table():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -47,7 +49,7 @@ def create_table():
 
 
 def export_markdown(base_name, audio, transcription, summary):
-    markdown_path = os.path.join(MARKDOWN_DIR, f"{base_name}.md")
+    markdown_path = f"{base_name}.md"
 
     texto_transcripcion = open(transcription).read() if os.path.exists(transcription) else ""
     summary_text= open(summary).read() if os.path.exists(summary) else ""
@@ -84,6 +86,19 @@ def save_in_db(audio, transcripcion, summary, markdown_path, modo):
     """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), base_name, audio, transcripcion, summary, markdown_path, modo))
     conn.commit()
     conn.close()
+
+
+def split_audio(audio_path, duracion=600):
+    folder = os.path.dirname(audio_path)
+    base = os.path.splitext(os.path.basename(audio_path))[0]
+    output = os.path.join(folder, f"{base}_chunk_%03d.mp3")
+    subprocess.run([
+        "ffmpeg", "-i", audio_path,
+        "-f", "segment", "-segment_time", str(duracion),
+        "-c", "copy", output
+    ])
+    chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base+"_chunk_")])
+    return chunks
 
 
 def record_audio(args):
@@ -123,6 +138,7 @@ def record_audio(args):
     signal.signal(signal.SIGINT, stop_record)
     proceso.wait()
     return response
+
 
 def transcript_openai(audio_path):
     """
@@ -173,6 +189,48 @@ def transcript_openai(audio_path):
     with open(response, "w") as out:
         out.write("\n".join(transcriptions))
     return response
+
+
+def transcript_chunk_gemini(client, audio_path):
+    prompt = "Transcribe este audio con timestamps y hablantes si los detectas."
+    uploaded = client.files.upload(file=audio_path)
+    resp = client.models.generate_content(model=MODEL_GEMINI, contents=[prompt, uploaded])
+    return resp.text
+
+
+def transcript_gemini(audio_path):
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", None))
+
+    # Primero subir el archivo de audio si es grande
+    uploaded = client.files.upload(file=audio_path)
+    # Ahora realizar la generación de contenido usando la parte audio + prompt
+    prompt = "Transcribe este audio con timestamps."
+    response = client.models.generate_content(
+        model=MODEL_GEMINI,
+        contents=[prompt, uploaded]
+    )
+
+    texto = response.text  # el texto transcrito con timestamps
+    # Nombre de salida
+    salida = os.path.splitext(audio_path)[0] + "_gemini_transcription.txt"
+    with open(salida, "w", encoding="utf-8") as f:
+        f.write(texto)
+    return salida
+
+
+def transcript_long_gemini(audio_path):
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", None))
+    chunks = split_audio(audio_path, duracion=600)
+    full_text = []
+    for i, chunk in enumerate(chunks, 1):
+        logger.info(f"🧩 Transcription chunk {i}/{len(chunks)}: {chunk}")
+        text = transcript_chunk_gemini(client, chunk)
+        full_text.append(f"\n\n### CHUNK {i}\n{text}")
+    output = os.path.splitext(audio_path)[0] + "_gemini_transcription.txt"
+    with open(output, "w", encoding="utf-8") as f:
+        f.write("\n".join(full_text))
+    logger.info(f"✅ Transcription complete: {output}")
+    return output
 
 
 def transcript_local(audio_path):
@@ -275,6 +333,56 @@ def summary_local(transcription_path):
     return salida
 
 
+def summary_gemini(transcription_path, args):
+    # Check if the provided transcription file exists
+    if not os.path.exists(transcription_path):
+        raise FileNotFoundError(f"File not found: {transcription_path}")
+    
+    # Read the transcription content
+    with open(transcription_path, 'r', encoding='utf-8') as file:
+        transcription_content = file.read()
+
+    if not transcription_content.strip():
+        raise ValueError("The transcription file is empty or not properly formatted.")
+
+    # Process the transcription content for the summary
+    logger.info("🧩 Generating Gemini protocol summary...")
+
+    with open(transcription_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    logger.info(f"🧠 Generating summary with Gemini ({MODEL_GEMINI})...")
+
+    # Inicializar cliente
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", None))
+
+    # Crear el prompt
+    prompt = (
+        "Analiza la siguiente transcripción de una reunión y genera un resumen estructurado "
+        "en formato Markdown con las siguientes secciones:\n\n"
+        "## 🧠 Resumen general\n"
+        "## 📌 Puntos clave\n"
+        "## 🧩 Decisiones tomadas\n"
+        "## 🗓️ Tareas y responsables\n"
+        "## 🚀 Próximos pasos\n\n"
+        "Transcripción:\n" + text[:25000]  # limitar a 25k chars
+    )
+
+    # Enviar a Gemini
+    response = client.models.generate_content(
+        model=MODEL_GEMINI,
+        contents=[prompt]
+    )
+
+    summary = response.text or ""
+    output = transcription_path.replace(".txt", "_summary_gemini.txt")
+    with open(output, "w", encoding="utf-8") as f:
+        f.write(summary)
+
+    logger.info(f"✅ Resumen generado con Gemini: {output}")
+    return output
+
+
 def action_record(args):
     """
     Records an audio session and provides the path where the recording is saved.
@@ -303,18 +411,33 @@ def action_transcript(args):
     :return: None
     """
     create_table()
+    summary_path = None
+
     if not args.audio:
         logger.error("❌ You must specify a file with --audio.")
         sys.exit(1)
     audio_path = args.audio
-    transcript_path = transcript_openai(audio_path) if args.mode == "online" else transcript_local(audio_path)
-    summary_path = summary_openai(transcript_path, args) if args.mode == "online" else summary_local(transcript_path)
-    base_name = os.path.basename(audio_path).replace(".mp3", "")
+    if args.mode == "openai":
+        transcript_path = transcript_openai(audio_path)
+        if args.export_md:
+            summary_path = summary_openai(transcript_path, args)
+    elif args.mode == "gemini":
+        transcript_path = transcript_long_gemini(audio_path)
+        if args.export_md:
+            summary_path = summary_gemini(transcript_path, args)
+    else:
+        transcript_path = transcript_local(audio_path)
+        if args.export_md:
+            summary_path = summary_local(transcript_path)
+
+    #base_name = os.path.basename(audio_path).replace(".mp3", "")
+    base_name = os.path.splitext(audio_path)[0]
     markdown_path = ""
     if args.export_md:
         markdown_path = export_markdown(base_name, audio_path, transcript_path, summary_path)
     save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.mode)
     logger.info(f"\n✅ Full transcript:\n📄 {markdown_path}\n💾 DB: {DB_PATH}\n")
+
 
 def action_process(args):
     """
@@ -329,14 +452,15 @@ def action_process(args):
     """
     create_table()
     audio_path = record_audio(args)
-    transcript_path = transcript_openai(audio_path) if args.mode == "online" else transcript_local(audio_path)
-    summary_path = summary_openai(transcript_path, args) if args.mode == "online" else summary_local(transcript_path)
+    transcript_path = transcript_openai(audio_path) if args.mode == "openai" else transcript_local(audio_path)
+    summary_path = summary_openai(transcript_path, args) if args.mode == "openai" else summary_local(transcript_path)
     base_name = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = ""
     if args.export_md:
         markdown_path = export_markdown(base_name, audio_path, transcript_path, summary_path)
     save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.mode)
     logger.info(f"\n✅ Everything ready:\n📄 Markdown: {markdown_path}\n💾 DB: {DB_PATH}\n")
+
 
 def action_diarize(args):
     """
@@ -351,8 +475,9 @@ def action_diarize(args):
         file path (str) and the target language (`lang`).
     :type args: argparse.Namespace
     """
+    huggingface_token: str = os.getenv('HUGGINGFACE_TOKEN', None)
     diarizer = Diarizer()
-    diarizer.transcribe_with_diarization(args.audio, lang=args.lang)
+    diarizer.transcribe_with_diarization(args.audio, lang=args.lang, hf_token=huggingface_token)
 
 
 def main():
@@ -385,6 +510,9 @@ def main():
     default_mic: str = os.getenv("DEFAULT_MIC", "alsa_input.usb-Logitech_MIC-00.mono-fallback")
     default_system_prompt: str = os.getenv("SYSTEM_PROMPT", "You are an expert meeting summary assistant.")
     parser = argparse.ArgumentParser(prog="meeting", description="CLI wizard to record and transcribe meetings.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+
     subparsers = parser.add_subparsers(dest="action", required=True)
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
     p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
@@ -392,14 +520,14 @@ def main():
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe and summarize recorded audio.")
-    p2.add_argument("-m", "--mode", choices=["online", "local"], default="local", help="Transcription mode")
+    p2.add_argument("-m", "--mode", choices=["openai", "gemini", "local"], default="local", help="Transcription mode")
     p2.add_argument("-a", "--audio", required=True, help="Audio file path .mp3")
     p2.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p2.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p2.set_defaults(func=action_transcript)
 
     p3 = subparsers.add_parser("process", help="Record, transcribe and summarize in a single stream.")
-    p3.add_argument("-m", "--mode", choices=["online", "local"], default="local", help="Processing mode")
+    p3.add_argument("-m", "--mode", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
     p3.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p3.set_defaults(func=action_process)
