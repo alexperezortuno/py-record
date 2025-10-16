@@ -32,4 +32,47 @@ pactl list short sources
 
 ```shell
 python -m meeting.cli diarize --audio ~/meetings/meeting_2025-10-14_22-45-00.mp3
+
+```
+### Install this repo
+
+Get the repo
+
+```shell
+git clone https://github.com/alexperezortuno/py-record
+```
+
+go to the repo
+
+```shell
+cd py-record
+```
+
+```shell
+pip install -e .
+```
+
+# Usage
+
+```shell
+meeting -h
+```
+
+```shell
+meeting record
+```
+
+```shell
+meeting transcript -e --mode openai --audio ~/meetings/meeting_2025-10-14_22-45-00.mp3
+```
+
+
+```shell
+meeting transcript -e --mode gemini --audio ~/meetings/meeting_2025-10-14_22-45-00.mp3
+```
+
+```shell
+```
+
+```shell
 ```
