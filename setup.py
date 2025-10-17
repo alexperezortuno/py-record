@@ -2,14 +2,18 @@ from setuptools import setup, find_packages
 
 setup(
     name="meeting-cli",
-    version="1.0.0",
+    version="1.0.5",
     packages=find_packages(),
     install_requires=[
-        "openai>=1.0.0",
-        "faster-whisper>=0.10.0",
-        "transformers>=4.30.0",
-        "torch",
-        "sentencepiece"
+        "openai==2.3.0",
+        "faster-whisper==1.2.0",
+        "transformers==4.57.1",
+        "torch==2.8.0",
+        "sentencepiece==0.2.1",
+        "pydub==0.25.1",
+        "whisperx==3.7.2",
+        "google-genai==1.41.0",
+        "charset-normalizer==3.0.0"
     ],
     entry_points={
         "console_scripts": [

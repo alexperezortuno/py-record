@@ -70,9 +70,3 @@ meeting transcript -e --mode openai --audio ~/meetings/meeting_2025-10-14_22-45-
 ```shell
 meeting transcript -e --mode gemini --audio ~/meetings/meeting_2025-10-14_22-45-00.mp3
 ```
-
-```shell
-```
-
-```shell
-```

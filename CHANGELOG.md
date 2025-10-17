@@ -7,16 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.0.5] - 2025-10-17
+
+### Added
+- Prompt multilingual support es/en
+- charset-normalization package for environments with non-utf8 characters
+
+### Fixed
+- Fix logging
+- Fix start/stop recording
+- Fix installer with toml
+
+---
+
 ## [1.0.4] - 2025-10-16
 
-## Added
+### Added
 - .env Template
 - Installer in README
 - Usage in README
 - multilingual support and refine summary prompts
 
-## Fixed
+### Fixed
 - Installer
+
+---
 
 ## [1.0.0] - 2025-10-16
 
