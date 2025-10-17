@@ -5,6 +5,7 @@ import argparse
 import subprocess
 import signal
 import sqlite3
+import logging
 from datetime import datetime
 from openai import OpenAI
 from pydub import AudioSegment
@@ -13,6 +14,9 @@ from google import genai
 
 from meeting.diarization import Diarizer
 from meeting.logger import logger_configuration
+
+logger = logging.getLogger("meeting-cli")
+logger.setLevel(logging.INFO)
 
 # Configuración general
 DB_PATH = "meetings.db"
@@ -34,17 +38,19 @@ def create_table():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS meetings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transcript_date TEXT,
-            transcript_name TEXT,
-            audio_path TEXT,
-            transcript_path TEXT,
-            summary_path TEXT,
-            summary_md_path TEXT,
-            mode TEXT
-        )
-    """)
+              CREATE TABLE IF NOT EXISTS meetings
+              (
+                  id INTEGER PRIMARY KEY
+                  AUTOINCREMENT,
+                  transcript_date TEXT,
+                  transcript_name TEXT,
+                  audio_path TEXT,
+                  transcript_path TEXT,
+                  summary_path TEXT,
+                  summary_md_path TEXT,
+                  mode TEXT
+              )
+              """)
     conn.commit()
     conn.close()
 
@@ -85,9 +91,12 @@ def save_in_db(audio, transcripcion, summary, markdown_path, modo):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        INSERT INTO meetings (transcript_date, transcript_name, audio_path, transcript_path, summary_path, summary_md_path, mode)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), base_name, audio, transcripcion, summary, markdown_path, modo))
+              INSERT INTO meetings (transcript_date, transcript_name, audio_path, transcript_path, summary_path,
+                                    summary_md_path, mode)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+              """,
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), base_name, audio, transcripcion, summary, markdown_path,
+               modo))
     conn.commit()
     conn.close()
 
@@ -101,47 +110,69 @@ def split_audio(audio_path, duracion=600):
         "-f", "segment", "-segment_time", str(duracion),
         "-c", "copy", output
     ])
-    chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base+"_chunk_")])
+    chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base + "_chunk_")])
     return chunks
 
 
 def record_audio(args):
     """
-    Records audio until pressed Ctrl+C.
+    Record audio from both microphone and system output (PulseAudio) into MP3 format.
+    Keeps recording until the user presses Ctrl+C. When interrupted, it sends 'q' to ffmpeg
+    so it finishes writing the trailer cleanly without warnings.
     """
-    str_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    response = os.path.join(OUTPUT_DIR, f"meeting_{str_date}.mp3")
 
-    monitor = args.monitor
-    mic = args.mic
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_path = os.path.join(OUTPUT_DIR, f"meeting_{timestamp}.mp3")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    logger.info(f"🎙️ Recording audio in: {response}")
+    logger.info(f"🎙️ Recording audio to: {output_path}")
     logger.info("🧩 Press Ctrl+C to stop recording.\n")
 
-    cmd = [
-        "ffmpeg",
-        "-f", "pulse", "-i", monitor,
-        "-f", "pulse", "-i", mic,
-        "-filter_complex", "[0:a][1:a]amerge=inputs=2[aout]",
-        "-map", "[aout]",
-        "-ac", "2", "-ar", "44100",
-        response
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-f", "pulse", "-i", args.monitor,
+        "-f", "pulse", "-i", args.mic,
+        "-filter_complex", "amerge=inputs=2",
+        "-ac", "2",
+        "-ar", "44100",
+        "-c:a", "libmp3lame",
+        output_path
     ]
 
-    proceso = subprocess.Popen(cmd)
+    # Launch ffmpeg with stdin so we can send 'q' for graceful stop
+    process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
-    def stop_record(sig, frame):
-        logger.info("\n🛑 Recording stopped by user.")
-        proceso.terminate()
+    def stop_recording(signum, frame):
+        print("\n🛑 Stopping recording gracefully...")
+        logger.info("🛑 Recording stopped by user (sending 'q' to ffmpeg).")
         try:
-            proceso.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proceso.kill()
-        sys.exit(0)
+            if process.poll() is None:
+                process.stdin.write(b"q\n")
+                process.stdin.flush()
+        except Exception as e:
+            logger.error(f"Error sending stop signal to ffmpeg: {e}")
 
-    signal.signal(signal.SIGINT, stop_record)
-    proceso.wait()
-    return response
+    signal.signal(signal.SIGINT, stop_recording)
+
+    try:
+        process.wait()
+    except KeyboardInterrupt:
+        stop_recording(None, None)
+
+    if os.path.exists(output_path):
+        logger.info(f"✅ Recording saved successfully: {output_path}")
+        print(f"\n✅ Recording saved: {output_path}")
+    else:
+        logger.error("❌ No output file generated.")
+        print("\n❌ Error: Output file was not created.")
+
+    return output_path
+
 
 
 def transcript_openai(audio_path):
@@ -285,20 +316,20 @@ def summary_openai(transcription_path, args):
     texto = open(transcription_path).read()
     client = OpenAI()
     logger.info("🧩 Generating summary with OpenAI...")
-    p: str = "Analyze this transcript and deliver:\n"
-    "1. A general summary (max 5 paragraphs)\n"
-    "2. List of key points\n"
-    "3. Decisions or tasks with those responsible\n"
-    "4. Pending issues or next steps\n\n"
-    "Transcription: "
+    p: str = ("Analyze this transcript and deliver:\n"
+              "1. A general summary (max 5 paragraphs)\n"
+              "2. List of key points\n"
+              "3. Decisions or tasks with those responsible\n"
+              "4. Pending issues or next steps\n\n"
+              "Transcription: ")
 
     if args.lang == "es":
-        p = "Analice esta transcripción y presente:\n"
-        "1. Un resumen general (máximo 5 párrafos)\n"
-        "2. Lista de puntos clave\n"
-        "3. Decisiones o tareas con los responsables\n"
-        "4. Asuntos pendientes o próximos pasos\n\n"
-        "Transcripción: "
+        p = ("Analice esta transcripción y presente:\n"
+             "1. Un resumen general (máximo 5 párrafos)\n"
+             "2. Lista de puntos clave\n"
+             "3. Decisiones o tareas con los responsables\n"
+             "4. Asuntos pendientes o próximos pasos\n\n"
+             "Transcripción: ")
     prompt = f"""
     {p}
     {texto[:15000]}
@@ -334,7 +365,7 @@ def summary_local(transcription_path):
     logger.info("🧩 Generating summary locally..")
     summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
     text = open(transcription_path).read()
-    fragments = [text[i:i+3000] for i in range(0, len(text), 3000)]
+    fragments = [text[i:i + 3000] for i in range(0, len(text), 3000)]
     summaries = []
     for frag in fragments:
         summary = summarizer(frag, max_length=300, min_length=80, do_sample=False)
@@ -368,24 +399,24 @@ def summary_gemini(transcription_path, args):
     # Inicializar cliente
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", None))
 
-    p: str = "Analyze the following meeting transcript and generate a structured summary"
-    "in Markdown format with the following sections:\n\n"
-    "## 🧠 General Summary\n"
-    "## 📌 Key Points\n"
-    "## 🧩 Decisions Made\n"
-    "## 🗓️ Tasks and Responsibilities\n"
-    "## 🚀 Next Steps\n\n"
-    "Transcript:\n"
+    p: str = ("Analyze the following meeting transcript and generate a structured summary"
+              "in Markdown format with the following sections:\n\n"
+              "## 🧠 General Summary\n"
+              "## 📌 Key Points\n"
+              "## 🧩 Decisions Made\n"
+              "## 🗓️ Tasks and Responsibilities\n"
+              "## 🚀 Next Steps\n\n"
+              "Transcript:\n")
 
     if args.lang == "es":
-        p = "Analiza la siguiente transcripción de una reunión y genera un resumen estructurado "
-        "en formato Markdown con las siguientes secciones:\n\n"
-        "## 🧠 Resumen general\n"
-        "## 📌 Puntos clave\n"
-        "## 🧩 Decisiones tomadas\n"
-        "## 🗓️ Tareas y responsables\n"
-        "## 🚀 Próximos pasos\n\n"
-        "Transcripción:\n"
+        p = ("Analiza la siguiente transcripción de una reunión y genera un resumen estructurado "
+             "en formato Markdown con las siguientes secciones:\n\n"
+             "## 🧠 Resumen general\n"
+             "## 📌 Puntos clave\n"
+             "## 🧩 Decisiones tomadas\n"
+             "## 🗓️ Tareas y responsables\n"
+             "## 🚀 Próximos pasos\n\n"
+             "Transcripción:\n")
     # Crear el prompt
     prompt = (
             p + text[:25000]  # limitar a 25k chars
