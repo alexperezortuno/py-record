@@ -6,6 +6,7 @@ import subprocess
 import signal
 import sqlite3
 import logging
+import platform
 from datetime import datetime
 from openai import OpenAI
 from pydub import AudioSegment
@@ -128,23 +129,65 @@ def record_audio(args):
     logger.info(f"🎙️ Recording audio to: {output_path}")
     logger.info("🧩 Press Ctrl+C to stop recording.\n")
 
-    ffmpeg_cmd = [
-        "ffmpeg", "-y",
-        "-f", "pulse", "-i", args.monitor,
-        "-f", "pulse", "-i", args.mic,
-        "-filter_complex", "amerge=inputs=2",
-        "-ac", "2",
-        "-ar", "44100",
-        "-c:a", "libmp3lame",
-        output_path
-    ]
+    system = platform.system().lower()
+
+    # Detect platform and build ffmpeg command accordingly
+    if system == "linux":
+        if args.mic_only:
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-f", "pulse",
+                "-i", args.mic,
+                "-filter_complex", "amerge=inputs=2",
+                "-ac", "2",
+                "-ar", "44100",
+                "-c:a", "libmp3lame",
+                output_path
+            ]
+        elif args.system_only:
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-f", "pulse",
+                "-i", args.system_only,
+                "-ac", "2",
+                "-ar", "44100",
+            ]
+        else:
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-f", "pulse", "-i", args.monitor,
+                "-f", "pulse", "-i", args.mic,
+                "-filter_complex", "amerge=inputs=2",
+                "-ac", "2",
+                "-ar", "44100",
+                "-c:a", "libmp3lame",
+                output_path
+            ]
+    elif system == "windows":
+        # Use default DirectSound input (microphone)
+        # You can list devices with: ffmpeg -list_devices true -f dshow -i dummy
+        input_device = args.mic if args.mic else "audio='Microphone (Realtek High Definition Audio)'"
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-f", "dshow",
+            "-i", input_device,
+            "-ac", "2",
+            "-ar", "44100",
+            "-c:a", "libmp3lame",
+            output_path
+        ]
+    else:
+        logger.error(f"Unsupported OS: {system}")
+        print("❌ Unsupported operating system. Only Linux and Windows are supported.")
+        return None
 
     # Launch ffmpeg with stdin so we can send 'q' for graceful stop
     process = subprocess.Popen(
         ffmpeg_cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
+        shell=(system == "windows")  # Windows requires shell=True for proper pipe handling
     )
 
     def stop_recording(signum, frame):
@@ -608,6 +651,8 @@ def main():
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
     p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
     p1.add_argument("--mic", default=default_mic, help="Listen device for audio input")
+    p1.add_argument("--mic-only", action="store_true", help="Record microphone-only audio")
+    p1.add_argument("--system-only", action="store_true", help="Record system-only audio")
     p1.add_argument("--env", default=None, help=help_desc_env)
     p1.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p1.set_defaults(func=action_record)
