@@ -21,7 +21,6 @@ logger.setLevel(logging.INFO)
 
 # Configuración general
 DB_PATH = "meetings.db"
-OUTPUT_DIR = os.path.expanduser("~/meetings")
 MARKDOWN_DIR = os.path.expanduser("~/markdowns")
 MODEL_LOCAL = "small"  # faster-whisper
 MODEL_OPENAI = "gpt-4o-mini-transcribe"
@@ -32,8 +31,8 @@ MODEL_SUMMARY = "gpt-4o"  # o gpt-5 si tienes acceso
 # =====================================================
 # UTILITIES
 # =====================================================
-def create_table():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def create_table(args):
+    os.makedirs(args.output, exist_ok=True)
     os.makedirs(MARKDOWN_DIR, exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH)
@@ -123,8 +122,8 @@ def record_audio(args):
     """
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_path = os.path.join(OUTPUT_DIR, f"meeting_{timestamp}.mp3")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_path = os.path.join(args.output, f"meeting_{timestamp}.mp3")
+    os.makedirs(args.output, exist_ok=True)
 
     logger.info(f"🎙️ Recording audio to: {output_path}")
     logger.info("🧩 Press Ctrl+C to stop recording.\n")
@@ -522,7 +521,7 @@ def action_record(args):
     """
     if args.env is not None:
         load_env_file(args.env)
-    create_table()
+    create_table(args)
     audio_path = record_audio(args)
     logger.info(f"\n✅ Recording saved in {audio_path}")
     logger.info(f"You can later transcribe with:\n   meeting transcript --mode local --audio {audio_path}\n")
@@ -539,18 +538,18 @@ def action_transcript(args):
     """
     if args.env is not None:
         load_env_file(args.env)
-    create_table()
+    create_table(args)
     summary_path = None
 
     if not args.audio:
         logger.error("❌ You must specify a file with --audio.")
         sys.exit(1)
     audio_path = args.audio
-    if args.mode == "openai":
+    if args.model == "openai":
         transcript_path = transcript_openai(audio_path)
         if args.export_md:
             summary_path = summary_openai(transcript_path, args)
-    elif args.mode == "gemini":
+    elif args.model == "gemini":
         transcript_path = transcript_long_gemini(audio_path)
         if args.export_md:
             summary_path = summary_gemini(transcript_path, args)
@@ -563,7 +562,7 @@ def action_transcript(args):
     markdown_path = ""
     if args.export_md:
         markdown_path = export_markdown(base_name, audio_path, transcript_path, summary_path)
-    save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.mode)
+    save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.model)
     logger.info(f"\n✅ Full transcript:\n📄 {markdown_path}\n💾 DB: {DB_PATH}\n")
 
 
@@ -580,15 +579,15 @@ def action_process(args):
     """
     if args.env is not None:
         load_env_file(args.env)
-    create_table()
+    create_table(args)
     audio_path = record_audio(args)
-    transcript_path = transcript_openai(audio_path) if args.mode == "openai" else transcript_local(audio_path)
-    summary_path = summary_openai(transcript_path, args) if args.mode == "openai" else summary_local(transcript_path)
+    transcript_path = transcript_openai(audio_path) if args.model == "openai" else transcript_local(audio_path)
+    summary_path = summary_openai(transcript_path, args) if args.model == "openai" else summary_local(transcript_path)
     base_name = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = ""
     if args.export_md:
         markdown_path = export_markdown(base_name, audio_path, transcript_path, summary_path)
-    save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.mode)
+    save_in_db(audio_path, transcript_path, summary_path, markdown_path, args.model)
     logger.info(f"\n✅ Everything ready:\n📄 Markdown: {markdown_path}\n💾 DB: {DB_PATH}\n")
 
 
@@ -655,23 +654,38 @@ def main():
     p1.add_argument("--system-only", action="store_true", help="Record system-only audio")
     p1.add_argument("--env", default=None, help=help_desc_env)
     p1.add_argument("-l", "--lang", default="en", help=help_desc_lang)
+    p1.add_argument(
+        "--output",
+        help="Directory to save the recorded meeting file",
+        default=os.path.expanduser("~/meetings")
+    )
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe and summarize recorded audio.")
-    p2.add_argument("-m", "--mode", choices=["openai", "gemini", "local"], default="local", help="Transcription mode")
+    p2.add_argument("-m", "--model", choices=["openai", "gemini", "local"], default="local", help="Transcription mode")
     p2.add_argument("-a", "--audio", required=True, help="Audio file path .mp3")
     p2.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p2.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p2.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p2.add_argument("--env", default=None, help=help_desc_env)
+    p2.add_argument(
+        "--output",
+        help="Directory to save the recorded meeting file",
+        default=os.path.expanduser("~/meetings")
+    )
     p2.set_defaults(func=action_transcript)
 
     p3 = subparsers.add_parser("process", help="Record, transcribe and summarize in a single stream.")
-    p3.add_argument("-m", "--mode", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
+    p3.add_argument("-m", "--model", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
     p3.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p3.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p3.add_argument("--env", default=None, help=help_desc_env)
+    p3.add_argument(
+        "--output",
+        help="Directory to save the recorded meeting file",
+        default=os.path.expanduser("~/meetings")
+    )
     p3.set_defaults(func=action_process)
 
     p4 = subparsers.add_parser("diarize", help="Transcribe and identify speakers (diarization).")
