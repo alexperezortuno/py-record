@@ -1,203 +1,257 @@
+# Meeting CLI Assistant
 
-# 🎙️ Meeting CLI Assistant
+A powerful command-line tool for recording, transcribing, and summarizing meetings with speaker diarization support.
 
-A command-line interface (CLI) tool for quickly recording, transcribing, and summarizing meetings. Ideal for users who need to capture and process meeting audio effortlessly.
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Examples](#examples)
+- [Environment Variables](#environment-variables)
+- [Dependencies](#dependencies)
+- [Extensibility](#extensibility)
 
 ---
 
-## 🚀 Features
+## Features
 
-This CLI supports the following main operations:
+| Command | Description |
+|---------|-------------|
+| `record` | Records audio from system output and microphone until stopped |
+| `transcript` | Transcribes an audio file and generates an AI-powered summary |
+| `process` | Records, transcribes, and summarizes in one continuous flow |
+| `diarize` | Transcribes audio with automatic speaker identification |
 
-- **`record`**: Records audio from output and input devices until manually stopped.
-- **`transcript`**: Transcribes an `.mp3` audio file and generates a summary.
-- **`process`**: Performs recording, transcription, and summarization in one continuous stream.
-- **`diarize`**: Transcribes audio and identifies different speakers (diarization).
+**Supported Transcription Modes:**
+- **Local** - Uses Faster-Whisper (default, no API needed)
+- **OpenAI** - Uses OpenAI's Whisper API
+- **Gemini** - Uses Google Gemini for intelligent summarization
 
 ---
-## 📦 Installation
 
-```shell
+## Prerequisites
+
+### System Dependencies
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install ffmpeg pavucontrol cmake pkg-config libsentencepiece-dev -y
+```
+
+**macOS:**
+```bash
+brew install ffmpeg cmake
+```
+
+**Python:**
+- Python 3.9 or higher
+
+---
+
+## Installation
+
+```bash
 # Clone the repository
 git clone https://github.com/alexperezortuno/py-record.git
 cd py-record
 
-## Optional in conda or venv you need first this
-pip install -U pip setuptools wheel
-
-## Install dependencies
+# Install dependencies
 pip install -r requirements.txt
-```
 
-Optionally, you can create a virtual environment and install the dependencies there.
-
-```shell
+# Install in development mode (optional)
 pip install -e .
 ```
 
 ---
 
-## 🛠️ Requirements
+## Configuration
 
-### Linux
+### Audio Devices
 
-```shell
-sudo apt update
-
-sudo apt install ffmpeg pavucontrol cmake pkg-config libsentencepiece-dev -y
+List available audio devices on Linux:
+```bash
+pactl list short sources   # Input devices (microphones)
+pactl list short sinks    # Output devices (speakers)
 ```
 
-### Python 3.9+
+### Environment Variables
 
-openai==2.3.0
+Create a `.env` file in the project root:
 
-faster-whisper==1.2.0
+```env
+# Default audio devices
+DEFAULT_MONITOR=alsa_output.pci-0000_00_1b.0.analog-stereo.monitor
+DEFAULT_MIC=alsa_input.pci-0000_00_1b.0.analog-stereo
 
-transformers==4.57.1
+# AI Configuration
+OPENAI_API_KEY=your-openai-api-key
+GOOGLE_API_KEY=your-google-api-key
 
-torch==2.8.0
-
-sentencepiece==0.2.1
-
-pydub==0.25.1
-
-whisperx==3.7.2
-
-google-genai==1.41.0
-
-charset-normalizer==3.0.0
-
----
-
-### How to get audio devices
-
-```shell
-pactl list short sources
-pactl list short sinks
+# Custom prompt for summarization
+SYSTEM_PROMPT=Provide a detailed summary with key action items and decisions.
 ```
 
 ---
 
-## 🧑‍💻 Usage
-
-Note: If you installed the package using `pip`, you can run the CLI using the `meeting` command, change the `python` command to `meeting` in the examples below.
+## Usage
 
 ```bash
-python main.py <subcommand> [options]
+python main.py <command> [options]
 ```
 
-### Available Subcommands:
+If installed with `pip install -e .`, replace `python main.py` with `meeting`.
 
----
+### Commands
 
-### `record`
+#### `record`
 
-Record only audio using the configured devices.
+Record audio from configured devices.
 
 ```bash
-python main.py record [--monitor MONITOR_DEVICE] [--mic MIC_DEVICE] [--lang LANG] [--env PATH]
+python main.py record [options]
 ```
 
-- `--monitor`: Output audio device (default: from `DEFAULT_MONITOR` environment variable)
-- `--mic`: Input microphone device (default: from `DEFAULT_MIC` environment variable)
-- `--lang`: Language code (`en`, `es`, etc.)
-- `--env`: Path to a `.env` file with environment variables
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--monitor` | Output audio device | `DEFAULT_MONITOR` env var |
+| `--mic` | Microphone device | `DEFAULT_MIC` env var |
+| `--lang` | Language code (en, es, fr, etc.) | `en` |
+| `--env` | Path to `.env` file | - |
 
----
+#### `transcript`
 
-### `transcript`
-
-Transcribe and summarize a `.mp3` audio file.
+Transcribe and summarize an audio file.
 
 ```bash
-python main.py transcript --audio path/to/audio.mp3 [--mode MODE] [--prompt PROMPT] [--export-md] [--lang LANG] [--env PATH]
+python main.py transcript --audio path/to/audio.mp3 [options]
 ```
 
-- `--audio`: Path to the `.mp3` audio file (required)
-- `--mode`: `openai`, `gemini`, or `local` (default: `local`)
-- `--prompt`: System prompt to generate the summary (default: from `SYSTEM_PROMPT` environment variable)
-- `--export-md`: Export the summary in Markdown format
-- `--lang`: Language for transcription
-- `--env`: Path to the `.env` file
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--audio` | Path to audio file (required) | - |
+| `--mode` | Transcription mode: `local`, `openai`, `gemini` | `local` |
+| `--prompt` | System prompt for summarization | `SYSTEM_PROMPT` env var |
+| `--export-md` | Export summary as Markdown | `false` |
+| `--lang` | Language code | auto-detect |
+| `--env` | Path to `.env` file | - |
 
----
+#### `process`
 
-### `process`
-
-Record, transcribe, and summarize in a single flow.
+Combined recording, transcription, and summarization.
 
 ```bash
-python main.py process [--mode MODE] [--prompt PROMPT] [--export-md] [--lang LANG] [--env PATH]
+python main.py process [options]
 ```
 
-Same parameters as `transcript`, but it performs audio recording first.
+Same options as `transcript`, plus device selection from `record`.
 
----
+#### `diarize`
 
-### `diarize`
-
-Transcribe audio and identify different speakers.
+Speaker diarization with transcription.
 
 ```bash
-python main.py diarize --audio path/to/audio.mp3 [--lang LANG] [--env PATH]
+python main.py diarize --audio path/to/audio.mp3 [options]
 ```
 
-- `--audio`: Path to the `.mp3` file (required)
-- `--lang`: Language for transcription
-- `--env`: Path to the `.env` file
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--audio` | Path to audio file (required) | - |
+| `--lang` | Language code | auto-detect |
+| `--env` | Path to `.env` file | - |
 
 ---
 
-## 🔧 Environment Variables
+## Examples
 
-You can define the following variables in a `.env` file or directly in your system environment:
-
-- `DEFAULT_MONITOR`: Default device for capturing output audio.
-- `DEFAULT_MIC`: Default device for capturing microphone input.
-- `SYSTEM_PROMPT`: Default system prompt used for transcription summarization.
-
----
-
-## 📦 Dependencies
-
-Ensure all required libraries are installed (e.g., `argparse`, `os`, `logging`, and the ones needed by functions like `action_record`, `action_transcript`, etc.).
-
-You may list them in a `requirements.txt` file.
-
----
-
-## 🛠️ Usage Examples
-
-Record a meeting in English:
+### Basic Recording
 
 ```bash
+# Record meeting in English
 python main.py record --lang en
+
+# Record with specific devices
+python main.py record --monitor pulse --mic alsa_input --lang es
 ```
 
-Transcribe a file using OpenAI and export to Markdown:
+### Transcription
 
 ```bash
-python main.py transcript --audio meeting.mp3 --mode openai --export-md
+# Local transcription (no API key needed)
+python main.py transcript --audio meeting.mp3
+
+# With OpenAI Whisper API
+python main.py transcript --audio meeting.mp3 --mode openai
+
+# With Gemini summarization and Markdown export
+python main.py transcript --audio meeting.mp3 --mode gemini --export-md
 ```
 
-Process the full flow including diarization:
+### Full Processing Pipeline
 
 ```bash
+# Record and process in one command
+python main.py process --lang en --mode gemini --export-md
+```
+
+### Speaker Diarization
+
+```bash
+# Identify speakers in Spanish audio
 python main.py diarize --audio meeting.mp3 --lang es
 ```
 
 ---
 
-## 📝 Notes
+## Environment Variables
 
-- The CLI automatically validates arguments and shows helpful error messages.
-- You can enable verbose or debug logging in any command:
-  ```bash
-  python main.py process --debug
-  ```
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `DEFAULT_MONITOR` | Default system audio capture device | No |
+| `DEFAULT_MIC` | Default microphone device | No |
+| `SYSTEM_PROMPT` | Custom prompt for AI summarization | No |
+| `OPENAI_API_KEY` | OpenAI API key for Whisper transcription | Only for `--mode openai` |
+| `GOOGLE_API_KEY` | Google API key for Gemini summarization | Only for `--mode gemini` |
 
 ---
 
-## 🧩 Extensibility
+## Dependencies
 
-Each subcommand is mapped to a specific function (`action_record`, `action_transcript`, etc.), making it easy to add new functionalities without affecting the existing ones.
+```
+openai==2.3.0
+faster-whisper==1.2.0
+transformers==4.57.1
+torch==2.8.0
+sentencepiece==0.2.1
+pydub==0.25.1
+whisperx==3.7.2
+google-genai==1.41.0
+charset-normalizer==3.0.0
+```
+
+---
+
+## Extensibility
+
+The CLI follows a modular architecture where each subcommand maps to a dedicated function:
+
+- `action_record()` - Audio recording
+- `action_transcript()` - Transcription with summarization
+- `action_process()` - Combined workflow
+- `action_diarize()` - Speaker diarization
+
+To add new commands, simply implement a new action function and register it in the CLI parser.
+
+---
+
+## License
+
+MIT License - See [LICENSE](LICENSE) file for details.
