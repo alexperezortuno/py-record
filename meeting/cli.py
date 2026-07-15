@@ -24,7 +24,7 @@ DB_PATH = "meetings.db"
 MARKDOWN_DIR = os.path.expanduser("~/markdowns")
 MODEL_LOCAL = "small"  # faster-whisper
 MODEL_OPENAI = "gpt-4o-mini-transcribe"
-MODEL_GEMINI = "gemini-2.5-flash"
+MODEL_GEMINI = "gemini-3.5-flash"
 MODEL_SUMMARY = "gpt-4o"  # o gpt-5 si tienes acceso
 
 
