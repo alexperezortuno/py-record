@@ -26,6 +26,9 @@ def logger_configuration(verbose=False, debug=False):
     os.makedirs(LOG_DIR, exist_ok=True)
     logger = logging.getLogger("meeting-cli")
     logger.setLevel(logging.DEBUG if debug else logging.INFO)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
 
     # --- Formatos ---
     text_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")

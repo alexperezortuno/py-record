@@ -7,13 +7,9 @@ import signal
 import sqlite3
 import logging
 import platform
+import shutil
 from datetime import datetime
-from openai import OpenAI
-from pydub import AudioSegment
-from pydub.utils import make_chunks
-from google import genai
 
-from meeting.diarization import Diarizer
 from meeting.logger import logger_configuration
 
 logger = logging.getLogger("meeting-cli")
@@ -102,16 +98,73 @@ def save_in_db(audio, transcripcion, summary, markdown_path, modo):
 
 
 def split_audio(audio_path, duracion=600):
+    if not os.path.isfile(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
     folder = os.path.dirname(audio_path)
     base = os.path.splitext(os.path.basename(audio_path))[0]
     output = os.path.join(folder, f"{base}_chunk_%03d.mp3")
-    subprocess.run([
+    result = subprocess.run([
         "ffmpeg", "-i", audio_path,
         "-f", "segment", "-segment_time", str(duracion),
         "-c", "copy", output
-    ])
+    ], check=False)
+    if result.returncode != 0:
+        raise RuntimeError("FFmpeg could not split the audio file.")
     chunks = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.startswith(base + "_chunk_")])
     return chunks
+
+
+def build_ffmpeg_command(args, output_path, system=None):
+    """Build the FFmpeg command for the selected capture mode."""
+    system = system or platform.system().lower()
+    if system == "linux":
+        inputs = []
+        if args.mic_only:
+            inputs = [args.mic]
+        elif args.system_only:
+            inputs = [args.monitor]
+        else:
+            inputs = [args.monitor, args.mic]
+
+        command = ["ffmpeg", "-y"]
+        for device in inputs:
+            command.extend(["-f", "pulse", "-i", device])
+        if len(inputs) == 2:
+            command.extend(["-filter_complex", "amerge=inputs=2"])
+        command.extend([
+            "-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", output_path
+        ])
+        return command
+    if system == "windows":
+        input_device = args.mic or "audio='Microphone (Realtek High Definition Audio)'"
+        return [
+            "ffmpeg", "-y", "-f", "dshow", "-i", input_device,
+            "-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", output_path
+        ]
+    raise RuntimeError(f"Unsupported operating system: {system}")
+
+
+def validate_audio_devices(args, system=None):
+    """Validate FFmpeg and PulseAudio sources when the platform exposes pactl."""
+    system = system or platform.system().lower()
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("FFmpeg is not installed or is not available in PATH.")
+    if system != "linux":
+        return
+    pactl = shutil.which("pactl")
+    if pactl is None:
+        logger.warning("pactl is unavailable; FFmpeg will validate the audio devices.")
+        return
+    result = subprocess.run([pactl, "list", "short", "sources"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError("Could not inspect PulseAudio/PipeWire sources with pactl.")
+    sources = {line.split()[1] for line in result.stdout.splitlines()
+               if len(line.split()) >= 2}
+    requested = [args.mic] if args.mic_only else [args.monitor] if args.system_only else [args.monitor, args.mic]
+    missing = [device for device in requested if device not in sources]
+    if missing:
+        raise RuntimeError("Audio device(s) not found: " + ", ".join(missing))
 
 
 def record_audio(args):
@@ -130,55 +183,8 @@ def record_audio(args):
 
     system = platform.system().lower()
 
-    # Detect platform and build ffmpeg command accordingly
-    if system == "linux":
-        if args.mic_only:
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-f", "pulse",
-                "-i", args.mic,
-                "-filter_complex", "amerge=inputs=2",
-                "-ac", "2",
-                "-ar", "44100",
-                "-c:a", "libmp3lame",
-                output_path
-            ]
-        elif args.system_only:
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-f", "pulse",
-                "-i", args.system_only,
-                "-ac", "2",
-                "-ar", "44100",
-            ]
-        else:
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-f", "pulse", "-i", args.monitor,
-                "-f", "pulse", "-i", args.mic,
-                "-filter_complex", "amerge=inputs=2",
-                "-ac", "2",
-                "-ar", "44100",
-                "-c:a", "libmp3lame",
-                output_path
-            ]
-    elif system == "windows":
-        # Use default DirectSound input (microphone)
-        # You can list devices with: ffmpeg -list_devices true -f dshow -i dummy
-        input_device = args.mic if args.mic else "audio='Microphone (Realtek High Definition Audio)'"
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-f", "dshow",
-            "-i", input_device,
-            "-ac", "2",
-            "-ar", "44100",
-            "-c:a", "libmp3lame",
-            output_path
-        ]
-    else:
-        logger.error(f"Unsupported OS: {system}")
-        print("❌ Unsupported operating system. Only Linux and Windows are supported.")
-        return None
+    validate_audio_devices(args, system)
+    ffmpeg_cmd = build_ffmpeg_command(args, output_path, system)
 
     # Launch ffmpeg with stdin so we can send 'q' for graceful stop
     process = subprocess.Popen(
@@ -186,34 +192,64 @@ def record_audio(args):
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        shell=(system == "windows")  # Windows requires shell=True for proper pipe handling
     )
 
+    stopped = False
+
     def stop_recording(signum, frame):
+        nonlocal stopped
+        if stopped:
+            return
+        stopped = True
         print("\n🛑 Stopping recording gracefully...")
         logger.info("🛑 Recording stopped by user (sending 'q' to ffmpeg).")
         try:
-            if process.poll() is None:
+            if process.poll() is None and process.stdin is not None:
                 process.stdin.write(b"q\n")
                 process.stdin.flush()
         except Exception as e:
             logger.error(f"Error sending stop signal to ffmpeg: {e}")
 
+    previous_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, stop_recording)
 
     try:
-        process.wait()
+        while process.poll() is None:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                if not stopped:
+                    continue
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                break
     except KeyboardInterrupt:
         stop_recording(None, None)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        if process.stdin is not None:
+            process.stdin.close()
 
-    if os.path.exists(output_path):
+    if process.returncode != 0 and not (stopped and os.path.exists(output_path)):
+        raise RuntimeError(f"FFmpeg failed while recording (exit code {process.returncode}).")
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
         logger.info(f"✅ Recording saved successfully: {output_path}")
         print(f"\n✅ Recording saved: {output_path}")
-    else:
-        logger.error("❌ No output file generated.")
-        print("\n❌ Error: Output file was not created.")
-
-    return output_path
+        return output_path
+    raise RuntimeError("FFmpeg did not create a valid output file.")
 
 
 
@@ -234,7 +270,10 @@ def transcript_openai(audio_path):
          file does not exist.
     """
     if not os.path.exists(audio_path):
-        return None
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    from openai import OpenAI
+    from pydub import AudioSegment
+    from pydub.utils import make_chunks
     if os.getenv("OPENAI_API_KEY") is None:
         client = OpenAI()
     else:
@@ -269,6 +308,7 @@ def transcript_openai(audio_path):
 
 
 def transcript_chunk_gemini(client, audio_path):
+    from google import genai
     prompt = "Transcribe este audio con timestamps y hablantes si los detectas."
     uploaded = client.files.upload(file=audio_path)
     resp = client.models.generate_content(model=MODEL_GEMINI, contents=[prompt, uploaded])
@@ -276,6 +316,9 @@ def transcript_chunk_gemini(client, audio_path):
 
 
 def transcript_gemini(audio_path):
+    if not os.path.isfile(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    from google import genai
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", None))
 
     # Primero subir el archivo de audio si es grande
@@ -296,6 +339,9 @@ def transcript_gemini(audio_path):
 
 
 def transcript_long_gemini(audio_path):
+    if not os.path.isfile(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    from google import genai
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", None))
     chunks = split_audio(audio_path, duracion=600)
     full_text = []
@@ -310,7 +356,22 @@ def transcript_long_gemini(audio_path):
     return output
 
 
-def transcript_local(audio_path):
+def resolve_whisper_device(device="auto"):
+    if device not in {"auto", "cpu", "cuda"}:
+        raise ValueError("Whisper device must be one of: auto, cpu, cuda.")
+    if device == "cpu":
+        return "cpu"
+    try:
+        import torch
+        cuda_available = bool(torch.cuda.is_available())
+    except ImportError:
+        cuda_available = False
+    if device == "cuda" and not cuda_available:
+        raise RuntimeError("CUDA was requested for Faster-Whisper but is not available.")
+    return "cuda" if cuda_available else "cpu"
+
+
+def transcript_local(audio_path, model_name=None, device=None):
     """
     Transcribes an audio file into a text file using a local Whisper model.
 
@@ -324,14 +385,28 @@ def transcript_local(audio_path):
     Returns:
         str: The path to the output transcription text file.
     """
-    from faster_whisper import WhisperModel
+    if not os.path.isfile(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise RuntimeError("Faster-Whisper is not installed; install the project requirements first.") from exc
+    model_name = model_name or os.getenv("WHISPER_MODEL", MODEL_LOCAL)
+    device = resolve_whisper_device(device or os.getenv("WHISPER_DEVICE", "auto"))
     logger.info("🧠 Transcribing locally...")
-    modelo = WhisperModel(MODEL_LOCAL, device="cpu")
-    segments, _ = modelo.transcribe(audio_path, beam_size=5)
-    salida = audio_path.replace(".mp3", "_transcription_local.txt")
-    with open(salida, "w") as out:
+    compute_type = "float16" if device == "cuda" else "int8"
+    try:
+        modelo = WhisperModel(model_name, device=device, compute_type=compute_type)
+        segments, _ = modelo.transcribe(audio_path, beam_size=5)
+    except Exception as exc:
+        raise RuntimeError(f"Could not load or run Faster-Whisper model '{model_name}': {exc}") from exc
+    salida = os.path.splitext(audio_path)[0] + "_transcription_local.txt"
+    with open(salida, "w", encoding="utf-8") as out:
         for seg in segments:
-            out.write(seg.text.strip() + "\n")
+            start = getattr(seg, "start", None)
+            end = getattr(seg, "end", None)
+            timestamp = f"[{start:.2f} --> {end:.2f}] " if start is not None and end is not None else ""
+            out.write(timestamp + seg.text.strip() + "\n")
     return salida
 
 
@@ -355,7 +430,8 @@ def summary_openai(transcription_path, args):
         OpenAIError: If OpenAI services fail during the request or response.
 
     """
-    texto = open(transcription_path).read()
+    from openai import OpenAI
+    texto = open(transcription_path, encoding="utf-8").read()
     client = OpenAI()
     logger.info("🧩 Generating summary with OpenAI...")
     p: str = ("Analyze this transcript and deliver:\n"
@@ -419,6 +495,7 @@ def summary_local(transcription_path):
 
 
 def summary_gemini(transcription_path, args):
+    from google import genai
     # Check if the provided transcription file exists
     if not os.path.exists(transcription_path):
         raise FileNotFoundError(f"File not found: {transcription_path}")
@@ -554,7 +631,7 @@ def action_transcript(args):
         if args.export_md:
             summary_path = summary_gemini(transcript_path, args)
     else:
-        transcript_path = transcript_local(audio_path)
+        transcript_path = transcript_local(audio_path, args.whisper_model, args.whisper_device)
         if args.export_md:
             summary_path = summary_local(transcript_path)
 
@@ -581,7 +658,8 @@ def action_process(args):
         load_env_file(args.env)
     create_table(args)
     audio_path = record_audio(args)
-    transcript_path = transcript_openai(audio_path) if args.model == "openai" else transcript_local(audio_path)
+    transcript_path = (transcript_openai(audio_path) if args.model == "openai"
+                       else transcript_local(audio_path, args.whisper_model, args.whisper_device))
     summary_path = summary_openai(transcript_path, args) if args.model == "openai" else summary_local(transcript_path)
     base_name = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = ""
@@ -607,6 +685,7 @@ def action_diarize(args):
     if args.env is not None:
         load_env_file(args.env)
     huggingface_token: str = os.getenv('HUGGINGFACE_TOKEN', None)
+    from meeting.diarization import Diarizer
     diarizer = Diarizer()
     diarizer.transcribe_with_diarization(args.audio, lang=args.lang, hf_token=huggingface_token)
 
@@ -647,45 +726,46 @@ def main():
     help_desc_lang: str = "Language code (e.g., es, en)"
 
     subparsers = parser.add_subparsers(dest="action", required=True)
+    def add_record_options(parser):
+        parser.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
+        parser.add_argument("--mic", default=default_mic, help="Listen device for audio input")
+        mode = parser.add_mutually_exclusive_group()
+        mode.add_argument("--mic-only", action="store_true", help="Record microphone-only audio")
+        mode.add_argument("--system-only", action="store_true", help="Record system-only audio")
+        parser.add_argument("--output", default=os.path.expanduser("~/meetings"),
+                            help="Directory to save the recorded meeting file")
+
+    def add_whisper_options(parser):
+        parser.add_argument("--whisper-model", default=None,
+                            help="Local Faster-Whisper model (or WHISPER_MODEL)")
+        parser.add_argument("--whisper-device", choices=["auto", "cpu", "cuda"], default=None,
+                            help="Local Faster-Whisper device (default: auto)")
+
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
-    p1.add_argument("--monitor", default=default_monitor, help="Record device for audio output")
-    p1.add_argument("--mic", default=default_mic, help="Listen device for audio input")
-    p1.add_argument("--mic-only", action="store_true", help="Record microphone-only audio")
-    p1.add_argument("--system-only", action="store_true", help="Record system-only audio")
+    add_record_options(p1)
     p1.add_argument("--env", default=None, help=help_desc_env)
     p1.add_argument("-l", "--lang", default="en", help=help_desc_lang)
-    p1.add_argument(
-        "--output",
-        help="Directory to save the recorded meeting file",
-        default=os.path.expanduser("~/meetings")
-    )
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe and summarize recorded audio.")
-    p2.add_argument("-m", "--model", choices=["openai", "gemini", "local"], default="local", help="Transcription mode")
+    p2.add_argument("-m", "--model", "--mode", dest="model", choices=["openai", "gemini", "local"], default="local", help="Transcription mode")
     p2.add_argument("-a", "--audio", required=True, help="Audio file path .mp3")
     p2.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p2.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p2.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p2.add_argument("--env", default=None, help=help_desc_env)
-    p2.add_argument(
-        "--output",
-        help="Directory to save the recorded meeting file",
-        default=os.path.expanduser("~/meetings")
-    )
+    add_whisper_options(p2)
+    p2.add_argument("--output", default=os.path.expanduser("~/meetings"), help="Directory for meeting metadata")
     p2.set_defaults(func=action_transcript)
 
     p3 = subparsers.add_parser("process", help="Record, transcribe and summarize in a single stream.")
-    p3.add_argument("-m", "--model", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
+    p3.add_argument("-m", "--model", "--mode", dest="model", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
     p3.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p3.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p3.add_argument("--env", default=None, help=help_desc_env)
-    p3.add_argument(
-        "--output",
-        help="Directory to save the recorded meeting file",
-        default=os.path.expanduser("~/meetings")
-    )
+    add_record_options(p3)
+    add_whisper_options(p3)
     p3.set_defaults(func=action_process)
 
     p4 = subparsers.add_parser("diarize", help="Transcribe and identify speakers (diarization).")
@@ -697,8 +777,19 @@ def main():
     args = parser.parse_args()
     global logger
     logger = logger_configuration(verbose=args.verbose, debug=args.debug)
-    args.func(args)
+    try:
+        args.func(args)
+        return 0
+    except KeyboardInterrupt:
+        logger.error("Operation interrupted by user.")
+        return 130
+    except ImportError as exc:
+        logger.error(f"Missing optional dependency: {exc}")
+        return 1
+    except (FileNotFoundError, RuntimeError, ValueError, OSError) as exc:
+        logger.error(str(exc))
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

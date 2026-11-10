@@ -31,7 +31,7 @@ A powerful command-line tool for recording, transcribing, and summarizing meetin
 | `diarize` | Transcribes audio with automatic speaker identification |
 
 **Supported Transcription Modes:**
-- **Local** - Uses Faster-Whisper (default, no API needed)
+- **Local** - Uses Faster-Whisper (default, completely local and no API needed)
 - **OpenAI** - Uses OpenAI's Whisper API
 - **Gemini** - Uses Google Gemini for intelligent summarization
 
@@ -46,6 +46,11 @@ A powerful command-line tool for recording, transcribing, and summarizing meetin
 sudo apt update
 sudo apt install ffmpeg pavucontrol cmake pkg-config libsentencepiece-dev -y
 ```
+
+FFmpeg must be installed and available in `PATH`. On Linux, the recording devices
+are PulseAudio/PipeWire source names; use `pactl list short sources` to inspect them.
+Linux supports microphone-only, system-only, and combined capture. Windows uses
+DirectShow microphone capture; Linux PulseAudio modes are not available on macOS.
 
 **macOS:**
 ```bash
@@ -105,10 +110,10 @@ SYSTEM_PROMPT=Provide a detailed summary with key action items and decisions.
 ## Usage
 
 ```bash
-python main.py <command> [options]
+meeting <command> [options]
 ```
 
-If installed with `pip install -e .`, replace `python main.py` with `meeting`.
+The equivalent development invocation is `python -m meeting.cli <command> [options]`.
 
 ### Commands
 
@@ -117,13 +122,16 @@ If installed with `pip install -e .`, replace `python main.py` with `meeting`.
 Record audio from configured devices.
 
 ```bash
-python main.py record [options]
+meeting record [options]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--monitor` | Output audio device | `DEFAULT_MONITOR` env var |
 | `--mic` | Microphone device | `DEFAULT_MIC` env var |
+| `--mic-only` | Capture only the microphone | `false` |
+| `--system-only` | Capture only the system output monitor | `false` |
+| `--output` | Recording output directory | `~/meetings` |
 | `--lang` | Language code (en, es, fr, etc.) | `en` |
 | `--env` | Path to `.env` file | - |
 
@@ -132,40 +140,43 @@ python main.py record [options]
 Transcribe and summarize an audio file.
 
 ```bash
-python main.py transcript --audio path/to/audio.mp3 [options]
+meeting transcript --audio path/to/audio.mp3 [options]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--audio` | Path to audio file (required) | - |
-| `--mode` | Transcription mode: `local`, `openai`, `gemini` | `local` |
+| `--model`, `--mode` | Transcription mode: `local`, `openai`, `gemini` | `local` |
 | `--prompt` | System prompt for summarization | `SYSTEM_PROMPT` env var |
 | `--export-md` | Export summary as Markdown | `false` |
-| `--lang` | Language code | auto-detect |
+| `--lang` | Language code | `en` |
 | `--env` | Path to `.env` file | - |
+| `--whisper-model` | Faster-Whisper model name for local mode | `WHISPER_MODEL` or `small` |
+| `--whisper-device` | Local device: `auto`, `cpu`, or `cuda` | `WHISPER_DEVICE` or `auto` |
 
 #### `process`
 
 Combined recording, transcription, and summarization.
 
 ```bash
-python main.py process [options]
+meeting process [options]
 ```
 
-Same options as `transcript`, plus device selection from `record`.
+Same options as `transcript`, plus `--monitor`, `--mic`, `--mic-only`,
+`--system-only`, and `--output` from `record`.
 
 #### `diarize`
 
 Speaker diarization with transcription.
 
 ```bash
-python main.py diarize --audio path/to/audio.mp3 [options]
+meeting diarize --audio path/to/audio.mp3 [options]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--audio` | Path to audio file (required) | - |
-| `--lang` | Language code | auto-detect |
+| `--lang` | Language code | `en` |
 | `--env` | Path to `.env` file | - |
 
 ---
@@ -176,37 +187,44 @@ python main.py diarize --audio path/to/audio.mp3 [options]
 
 ```bash
 # Record meeting in English
-python main.py record --lang en
+meeting record --lang en
 
 # Record with specific devices
-python main.py record --monitor pulse --mic alsa_input --lang es
+meeting record --monitor pulse --mic alsa_input --lang es
+
+# Record only one source
+meeting record --mic-only
+meeting record --system-only --monitor alsa_output.example.monitor
 ```
 
 ### Transcription
 
 ```bash
 # Local transcription (no API key needed)
-python main.py transcript --audio meeting.mp3
+meeting transcript --audio meeting.mp3
+
+# Local transcription using a selected model and device
+meeting transcript --audio meeting.mp3 --whisper-model small --whisper-device cpu
 
 # With OpenAI Whisper API
-python main.py transcript --audio meeting.mp3 --mode openai
+meeting transcript --audio meeting.mp3 --mode openai
 
 # With Gemini summarization and Markdown export
-python main.py transcript --audio meeting.mp3 --mode gemini --export-md
+meeting transcript --audio meeting.mp3 --mode gemini --export-md
 ```
 
 ### Full Processing Pipeline
 
 ```bash
 # Record and process in one command
-python main.py process --lang en --mode gemini --export-md
+meeting process --lang en --mode gemini --export-md
 ```
 
 ### Speaker Diarization
 
 ```bash
 # Identify speakers in Spanish audio
-python main.py diarize --audio meeting.mp3 --lang es
+meeting diarize --audio meeting.mp3 --lang es
 ```
 
 ---
@@ -218,6 +236,8 @@ python main.py diarize --audio meeting.mp3 --lang es
 | `DEFAULT_MONITOR` | Default system audio capture device | No |
 | `DEFAULT_MIC` | Default microphone device | No |
 | `SYSTEM_PROMPT` | Custom prompt for AI summarization | No |
+| `WHISPER_MODEL` | Default Faster-Whisper model for local transcription | No |
+| `WHISPER_DEVICE` | Default local device: `auto`, `cpu`, or `cuda` | No |
 | `OPENAI_API_KEY` | OpenAI API key for Whisper transcription | Only for `--mode openai` |
 | `GOOGLE_API_KEY` | Google API key for Gemini summarization | Only for `--mode gemini` |
 
