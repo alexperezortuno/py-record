@@ -154,6 +154,17 @@ meeting transcript --audio path/to/audio.mp3 [options]
 | `--whisper-model` | Faster-Whisper model name for local mode | `WHISPER_MODEL` or `small` |
 | `--whisper-device` | Local device: `auto`, `cpu`, or `cuda` | `WHISPER_DEVICE` or `auto` |
 
+#### Local device selection
+
+CUDA availability is detected through CTranslate2 (the runtime behind Faster-Whisper),
+not through PyTorch, so PyTorch is not required for GPU transcription:
+
+- `auto` selects `cuda` when CTranslate2 reports a CUDA device with `float16` support,
+  and falls back to `cpu` otherwise.
+- `cpu` always uses the CPU.
+- `cuda` fails with an explicit error when CTranslate2 is missing, reports no CUDA
+  device, or cannot provide `float16` compute. It never silently falls back to CPU.
+
 #### `process`
 
 Combined recording, transcription, and summarization.

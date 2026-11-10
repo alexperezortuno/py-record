@@ -361,14 +361,36 @@ def resolve_whisper_device(device="auto"):
         raise ValueError("Whisper device must be one of: auto, cpu, cuda.")
     if device == "cpu":
         return "cpu"
+
+    cuda_error = None
     try:
-        import torch
-        cuda_available = bool(torch.cuda.is_available())
+        import ctranslate2
     except ImportError:
-        cuda_available = False
-    if device == "cuda" and not cuda_available:
-        raise RuntimeError("CUDA was requested for Faster-Whisper but is not available.")
-    return "cuda" if cuda_available else "cpu"
+        cuda_error = "CTranslate2 is not installed"
+    else:
+        try:
+            cuda_devices = ctranslate2.get_cuda_device_count()
+        except AttributeError:
+            cuda_error = "CTranslate2 does not expose CUDA device detection"
+        except Exception as exc:
+            cuda_error = f"CTranslate2 could not inspect CUDA devices: {exc}"
+        else:
+            if cuda_devices < 1:
+                cuda_error = "CTranslate2 detected no CUDA devices"
+            else:
+                try:
+                    compute_types = ctranslate2.get_supported_compute_types("cuda")
+                except Exception as exc:
+                    cuda_error = f"CTranslate2 could not inspect CUDA compute types: {exc}"
+                else:
+                    if "float16" not in compute_types:
+                        cuda_error = "CTranslate2 does not support float16 compute on CUDA"
+
+    if cuda_error is not None and device == "cuda":
+        raise RuntimeError(
+            "CUDA was requested for Faster-Whisper but cannot be used: " + cuda_error + "."
+        )
+    return "cuda" if cuda_error is None else "cpu"
 
 
 def transcript_local(audio_path, model_name=None, device=None):

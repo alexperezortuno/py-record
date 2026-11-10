@@ -140,8 +140,72 @@ class CliTests(unittest.TestCase):
                 self.assertIn("[1.25 --> 2.50] Hello", transcript.read())
 
     def test_cuda_requires_available_device(self):
-        with self.assertRaisesRegex(RuntimeError, "CUDA"):
-            cli.resolve_whisper_device("cuda")
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 0
+        ctranslate2.get_supported_compute_types = lambda device: set()
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}):
+            with self.assertRaisesRegex(RuntimeError, "CUDA.*CTranslate2 detected no CUDA devices"):
+                cli.resolve_whisper_device("cuda")
+
+    def test_cpu_device_does_not_require_cuda_runtime(self):
+        with patch.dict(sys.modules, {"ctranslate2": None}):
+            self.assertEqual(cli.resolve_whisper_device("cpu"), "cpu")
+
+    def test_cuda_device_uses_ctranslate2_capabilities(self):
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16", "int8_float16"}
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}):
+            self.assertEqual(cli.resolve_whisper_device("cuda"), "cuda")
+
+    def test_auto_uses_cuda_when_ctranslate2_supports_it(self):
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}):
+            self.assertEqual(cli.resolve_whisper_device("auto"), "cuda")
+
+    def test_auto_falls_back_to_cpu_without_cuda(self):
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 0
+        ctranslate2.get_supported_compute_types = lambda device: set()
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}):
+            self.assertEqual(cli.resolve_whisper_device("auto"), "cpu")
+
+    def test_cuda_transcription_does_not_import_torch(self):
+        class Segment:
+            start = 0.0
+            end = 0.5
+            text = " CUDA text "
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+
+            def transcribe(self, path, beam_size):
+                return iter([Segment()]), None
+
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        faster_whisper = types.ModuleType("faster_whisper")
+        faster_whisper.WhisperModel = FakeModel
+        with tempfile.TemporaryDirectory() as directory:
+            audio = os.path.join(directory, "audio.mp3")
+            open(audio, "wb").close()
+            with patch.dict(sys.modules, {
+                "ctranslate2": ctranslate2,
+                "faster_whisper": faster_whisper,
+                "torch": None,
+            }):
+                output = cli.transcript_local(audio, "tiny", "cuda")
+            with open(output, encoding="utf-8") as transcript:
+                self.assertIn("CUDA text", transcript.read())
+
+    def test_cuda_requires_available_device_without_ctranslate2(self):
+        with patch.dict(sys.modules, {"ctranslate2": None}):
+            with self.assertRaisesRegex(RuntimeError, "CUDA.*CTranslate2 is not installed"):
+                cli.resolve_whisper_device("cuda")
 
     def test_local_transcription_rejects_missing_audio(self):
         with self.assertRaises(FileNotFoundError):
