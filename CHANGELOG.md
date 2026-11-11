@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- LARM provider: summarize transcriptions with a local model served by LARM through its
+  OpenAI compatible API (`--model larm`, `--larm-model`)
+- New environment variables: `LARM_BASE_URL`, `LARM_MODEL`, `LARM_TIMEOUT`, `LARM_API_KEY`
+- REC-003: `meeting analyze` extracts topics, decisions, action items and open questions
+  from an existing transcription with a local model served by LARM
+  (`--transcript`, `--provider`, `--larm-model`, `--format`, `--output`, `--overwrite`)
+- REC-003: the answer of the model is validated before it is exported: the structure of the
+  payload is checked and every element must be backed by a literal quote of the transcript
+  with matching timestamps; unverified elements are rejected and reported
+- REC-003: the exported quote is always the fragment of the transcript that was verified,
+  and the timestamps come from the segment of the transcript that holds that fragment
+  (the ones declared by the model are checked against it and rejected when they do not
+  correspond)
+- REC-003: export of the analysis as JSON and/or Markdown (`reunion_analysis.json` and
+  `reunion_analysis.md`), without overwriting existing results unless `--overwrite` is used
+
+---
+
 ## [1.0.8] - 2025-10-28
 
 ### Added

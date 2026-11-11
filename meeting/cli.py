@@ -10,6 +10,9 @@ import platform
 import shutil
 from datetime import datetime
 
+from meeting import analysis
+from meeting.analysis import AnalysisError
+from meeting.larm import LarmError, build_system_prompt, resolve_config, summarize_transcription
 from meeting.logger import logger_configuration
 
 logger = logging.getLogger("meeting-cli")
@@ -22,6 +25,7 @@ MODEL_LOCAL = "small"  # faster-whisper
 MODEL_OPENAI = "gpt-4o-mini-transcribe"
 MODEL_GEMINI = "gemini-3.5-flash"
 MODEL_SUMMARY = "gpt-4o"  # o gpt-5 si tienes acceso
+PROVIDER_LARM = "larm"
 
 
 # =====================================================
@@ -578,6 +582,99 @@ def summary_gemini(transcription_path, args):
     return output
 
 
+def larm_system_prompt(args):
+    """
+    Builds the system message used to summarize meetings with a local LARM model.
+
+    The base prompt is the dedicated meeting prompt from `meeting.larm`. The `--prompt`
+    option is appended as extra guidance only when the user changed it, so the default
+    value does not dilute the required instructions.
+
+    Parameters:
+        args: Arguments object exposing `lang` and `prompt`.
+
+    Returns:
+        str: The system message for the chat completion request.
+    """
+    prompt = build_system_prompt(getattr(args, "lang", "en"))
+    user_prompt = (getattr(args, "prompt", "") or "").strip()
+    default_prompt = os.getenv(
+        "SYSTEM_PROMPT", "You are an expert meeting summary assistant."
+    ).strip()
+    if user_prompt and user_prompt != default_prompt:
+        prompt = f"{prompt}\nInstrucciones adicionales del usuario:\n{user_prompt}\n"
+    return prompt
+
+
+def summary_larm(transcription_path, args):
+    """
+    Generates a meeting summary using a local model served by LARM through its
+    OpenAI compatible chat completions API.
+
+    The transcription is sent in full as the user message: it is never truncated
+    silently, so a transcript larger than the model context window is reported as an
+    error instead of being summarized partially. LARM owns the model lifecycle, this
+    function only performs one request.
+
+    Parameters:
+        transcription_path (str): Path to the transcription text file.
+        args: Arguments object exposing `larm_model`, `lang` and `prompt`.
+
+    Returns:
+        str: File path of the summary output.
+
+    Raises:
+        FileNotFoundError: If the transcription file does not exist.
+        ValueError: If the transcription file is empty.
+        LarmError: If LARM is unreachable, misconfigured or returns an empty answer.
+    """
+    if not os.path.exists(transcription_path):
+        raise FileNotFoundError(f"File not found: {transcription_path}")
+
+    with open(transcription_path, "r", encoding="utf-8") as f:
+        transcription = f.read()
+
+    if not transcription.strip():
+        raise ValueError("The transcription file is empty or not properly formatted.")
+
+    config = resolve_config(getattr(args, "larm_model", None))
+    logger.info(
+        f"🧠 Generating summary with LARM ({config.model}) at {config.base_url}..."
+    )
+    summary = summarize_transcription(
+        transcription, config, system_prompt=larm_system_prompt(args)
+    )
+
+    output = transcription_path.replace(".txt", "_summary_larm.txt")
+    with open(output, "w", encoding="utf-8") as f:
+        f.write(summary)
+
+    logger.info(f"✅ Summary generated with LARM: {output}")
+    return output
+
+
+def preserve_transcript(audio_path, transcript_path, args):
+    """
+    Keeps the reference to an already generated transcript when the summary fails.
+
+    The transcript file is never deleted nor overwritten by a failed summary, and its
+    path is still registered in the database so the transcription can be recovered.
+
+    Parameters:
+        audio_path (str): Path to the source audio file.
+        transcript_path (str): Path to the generated transcription file.
+        args: Arguments object exposing the selected `model`.
+
+    Returns:
+        None
+    """
+    try:
+        save_in_db(audio_path, transcript_path, None, "", args.model)
+    except Exception as exc:
+        logger.error(f"Could not register the transcription in the database: {exc}")
+    logger.info(f"🛡️ Transcripción conservada en: {transcript_path}")
+
+
 def load_env_file(env_path=".env"):
     """
     Load environment variables from a .env file.
@@ -652,6 +749,16 @@ def action_transcript(args):
         transcript_path = transcript_long_gemini(audio_path)
         if args.export_md:
             summary_path = summary_gemini(transcript_path, args)
+    elif args.model == PROVIDER_LARM:
+        # LARM only serves text models: the audio is transcribed locally and the
+        # resulting transcript is summarized by the local LARM model.
+        transcript_path = transcript_local(audio_path, args.whisper_model, args.whisper_device)
+        if args.export_md:
+            try:
+                summary_path = summary_larm(transcript_path, args)
+            except (LarmError, KeyboardInterrupt):
+                preserve_transcript(audio_path, transcript_path, args)
+                raise
     else:
         transcript_path = transcript_local(audio_path, args.whisper_model, args.whisper_device)
         if args.export_md:
@@ -680,9 +787,19 @@ def action_process(args):
         load_env_file(args.env)
     create_table(args)
     audio_path = record_audio(args)
-    transcript_path = (transcript_openai(audio_path) if args.model == "openai"
-                       else transcript_local(audio_path, args.whisper_model, args.whisper_device))
-    summary_path = summary_openai(transcript_path, args) if args.model == "openai" else summary_local(transcript_path)
+    if args.model == PROVIDER_LARM:
+        # LARM only serves text models: the audio is transcribed locally and the
+        # resulting transcript is summarized by the local LARM model.
+        transcript_path = transcript_local(audio_path, args.whisper_model, args.whisper_device)
+        try:
+            summary_path = summary_larm(transcript_path, args)
+        except (LarmError, KeyboardInterrupt):
+            preserve_transcript(audio_path, transcript_path, args)
+            raise
+    else:
+        transcript_path = (transcript_openai(audio_path) if args.model == "openai"
+                           else transcript_local(audio_path, args.whisper_model, args.whisper_device))
+        summary_path = summary_openai(transcript_path, args) if args.model == "openai" else summary_local(transcript_path)
     base_name = os.path.basename(audio_path).replace(".mp3", "")
     markdown_path = ""
     if args.export_md:
@@ -696,8 +813,8 @@ def action_diarize(args):
     Executes speaker diarization on the provided audio input.
 
     This function facilitates audio diarization by instantiating
-    a `Diarizer` object and calling its diarization method on
-    the provided audio file while supporting user-specified
+    a `Diarizer` object and calling its diarization method on the
+    provided audio file while supporting user-specified
     language settings.
 
     :param args: Command-line arguments containing the `audio`
@@ -710,6 +827,79 @@ def action_diarize(args):
     from meeting.diarization import Diarizer
     diarizer = Diarizer()
     diarizer.transcribe_with_diarization(args.audio, lang=args.lang, hf_token=huggingface_token)
+
+
+def action_analyze(args):
+    """
+    Analyzes an existing transcription with a local model served by LARM and
+    exports the extracted topics, decisions, action items and open questions.
+
+    The transcription is read but never modified and it is never transcribed
+    again: the command only works with the text produced by a previous run. The
+    answer of the model is validated against the transcription before anything is
+    written, so the exported files are always complete.
+
+    :param args: Command-line arguments exposing `transcript`, `provider`,
+        `larm_model`, `format`, `output` and `overwrite`.
+    :type args: argparse.Namespace
+    :return: None
+    """
+    if args.env is not None:
+        load_env_file(args.env)
+
+    provider = getattr(args, "provider", PROVIDER_LARM)
+    if provider != PROVIDER_LARM:
+        raise ValueError(
+            f"Unsupported analysis provider '{provider}': only '{PROVIDER_LARM}' is "
+            "available in this release."
+        )
+
+    transcript_path = args.transcript
+    output_format = args.format
+    output_dir = args.output or os.path.dirname(os.path.abspath(transcript_path))
+    base_name = f"{os.path.splitext(os.path.basename(transcript_path))[0]}_analysis"
+
+    # The conflict is checked before the inference: an existing result is never
+    # replaced silently and the model is not loaded for a run that cannot write.
+    conflicts = analysis.check_overwrite(
+        analysis.target_paths(output_dir, base_name, output_format)
+    )
+    if conflicts and not args.overwrite:
+        raise AnalysisError(
+            "The analysis files already exist and will not be replaced: "
+            + ", ".join(conflicts)
+            + ". Review them and rerun the command with --overwrite to replace them."
+        )
+
+    transcription = analysis.read_transcript(transcript_path)
+
+    config = resolve_config(getattr(args, "larm_model", None))
+    logger.info(
+        f"🧠 Analyzing the transcription with LARM ({config.model}) at {config.base_url}..."
+    )
+    result = analysis.analyze_transcript(transcription, config)
+
+    for problem in result.problems:
+        logger.warning(f"⚠️  Rejected element {problem}")
+
+    written = analysis.write_analysis(
+        result.analysis,
+        output_dir,
+        output_format,
+        base_name,
+        overwrite=args.overwrite,
+        transcript_path=transcript_path,
+        model=config.model,
+    )
+    for path in written:
+        logger.info(f"✅ Analysis written: {path}")
+    logger.info(
+        f"📊 Elements: {len(result.analysis.topics)} topics, "
+        f"{len(result.analysis.decisions)} decisions, "
+        f"{len(result.analysis.action_items)} action items, "
+        f"{len(result.analysis.open_questions)} open questions."
+    )
+
 
 
 def main():
@@ -729,6 +919,8 @@ def main():
     - transcript: Transcribes and summarizes a recorded audio file.
     - process: Performs recording, transcription, and summarization in a single
       operation.
+    - analyze: Extracts topics, decisions, action items and open questions from an
+      existing transcription using a local model served by LARM.
 
     Environment variables:
     - DEFAULT_MONITOR: Default device for recording audio output.
@@ -763,6 +955,10 @@ def main():
         parser.add_argument("--whisper-device", choices=["auto", "cpu", "cuda"], default=None,
                             help="Local Faster-Whisper device (default: auto)")
 
+    def add_larm_options(parser):
+        parser.add_argument("--larm-model", default=None,
+                            help="LARM model alias registered in the LARM instance (or LARM_MODEL)")
+
     p1 = subparsers.add_parser("record", help="Record only the audio up to Ctrl+C.")
     add_record_options(p1)
     p1.add_argument("--env", default=None, help=help_desc_env)
@@ -770,24 +966,28 @@ def main():
     p1.set_defaults(func=action_record)
 
     p2 = subparsers.add_parser("transcript", help="Transcribe and summarize recorded audio.")
-    p2.add_argument("-m", "--model", "--mode", dest="model", choices=["openai", "gemini", "local"], default="local", help="Transcription mode")
+    p2.add_argument("-m", "--model", "--mode", dest="model", choices=["openai", "gemini", "local", PROVIDER_LARM], default="local",
+                    help="Transcription mode (larm transcribes locally and summarizes with a local LARM model)")
     p2.add_argument("-a", "--audio", required=True, help="Audio file path .mp3")
     p2.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p2.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p2.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p2.add_argument("--env", default=None, help=help_desc_env)
     add_whisper_options(p2)
+    add_larm_options(p2)
     p2.add_argument("--output", default=os.path.expanduser("~/meetings"), help="Directory for meeting metadata")
     p2.set_defaults(func=action_transcript)
 
     p3 = subparsers.add_parser("process", help="Record, transcribe and summarize in a single stream.")
-    p3.add_argument("-m", "--model", "--mode", dest="model", choices=["openai", "gemini", "local"], default="local", help="Processing mode")
+    p3.add_argument("-m", "--model", "--mode", dest="model", choices=["openai", "gemini", "local", PROVIDER_LARM], default="local",
+                    help="Processing mode (larm transcribes locally and summarizes with a local LARM model)")
     p3.add_argument("-e", "--export-md", action='store_true', help='Export the markdown in the folder')
     p3.add_argument("-p", "--prompt", default=default_system_prompt, help="System prompt")
     p3.add_argument("-l", "--lang", default="en", help=help_desc_lang)
     p3.add_argument("--env", default=None, help=help_desc_env)
     add_record_options(p3)
     add_whisper_options(p3)
+    add_larm_options(p3)
     p3.set_defaults(func=action_process)
 
     p4 = subparsers.add_parser("diarize", help="Transcribe and identify speakers (diarization).")
@@ -795,6 +995,23 @@ def main():
     p4.add_argument("-l", "--lang", default="en", help="Language code (e.g., es, en)")
     p4.add_argument("--env", default=None, help=help_desc_env)
     p4.set_defaults(func=action_diarize)
+
+    p5 = subparsers.add_parser(
+        "analyze",
+        help="Analyze an existing transcription and export topics, decisions, tasks and open questions.",
+    )
+    p5.add_argument("-t", "--transcript", required=True, help="Path to the transcription text file")
+    p5.add_argument("--provider", choices=[PROVIDER_LARM], default=PROVIDER_LARM,
+                    help="Analysis provider (only 'larm' is available)")
+    add_larm_options(p5)
+    p5.add_argument("--format", choices=["json", "markdown", "both"], default="both",
+                    help="Format of the exported analysis")
+    p5.add_argument("--output", default=None,
+                    help="Directory for the analysis files (default: the transcript folder)")
+    p5.add_argument("--overwrite", action="store_true",
+                    help="Replace the analysis files when they already exist")
+    p5.add_argument("--env", default=None, help=help_desc_env)
+    p5.set_defaults(func=action_analyze)
 
     args = parser.parse_args()
     global logger
