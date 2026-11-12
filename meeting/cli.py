@@ -26,6 +26,7 @@ MODEL_OPENAI = "gpt-4o-mini-transcribe"
 MODEL_GEMINI = "gemini-3.5-flash"
 MODEL_SUMMARY = "gpt-4o"  # o gpt-5 si tienes acceso
 PROVIDER_LARM = "larm"
+DEFAULT_WHISPER_VRAM_MB = 4096  # estimate used for models that are not known
 
 
 # =====================================================
@@ -360,7 +361,80 @@ def transcript_long_gemini(audio_path):
     return output
 
 
-def resolve_whisper_device(device="auto"):
+def get_cuda_free_memory_mb():
+    """
+    Reads the free video memory of the first CUDA device.
+
+    The device used by CTranslate2 is the first one, so the memory of that device is
+    the one that decides whether a model fits.
+
+    Returns:
+        int: The free memory in MiB, or None when it cannot be measured.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        value = line.strip()
+        if value.isdigit():
+            return int(value)
+    return None
+
+
+def estimate_whisper_vram_mb(model_name):
+    """
+    Estimates the video memory needed to run a Faster-Whisper model with float16.
+
+    The estimate covers the weights of the model plus the memory used while
+    transcribing, so it is a safe approximation of the peak usage.
+
+    Parameters:
+        model_name (str): The name of the Faster-Whisper model.
+
+    Returns:
+        int: The estimated VRAM in MiB.
+    """
+    name = os.path.basename(str(model_name or MODEL_LOCAL).strip().lower())
+    if name.endswith(".en"):
+        name = name[:-3]
+    estimates = {
+        "tiny": 1024,
+        "base": 1280,
+        "small": 2048,
+        "medium": 3584,
+        "large": 6144,
+        "large-v1": 6144,
+        "large-v2": 6144,
+        "large-v3": 6144,
+        "distil-large-v3": 3584,
+        "turbo": 4096,
+        "large-v3-turbo": 4096,
+    }
+    return estimates.get(name, DEFAULT_WHISPER_VRAM_MB)
+
+
+def resolve_whisper_device(device="auto", model_name=None):
+    """
+    Chooses the device used to run Faster-Whisper.
+
+    The availability of CUDA is detected through CTranslate2 and, when it is
+    available, the free video memory is checked against the memory needed by the
+    model, so a busy GPU is detected before the model is loaded.
+
+    Parameters:
+        device (str): The requested device: "auto", "cpu" or "cuda".
+        model_name (str): The name of the Faster-Whisper model, used to estimate the
+            video memory needed.
+
+    Returns:
+        str: The device to use: "cuda" or "cpu".
+    """
     if device not in {"auto", "cpu", "cuda"}:
         raise ValueError("Whisper device must be one of: auto, cpu, cuda.")
     if device == "cpu":
@@ -390,11 +464,76 @@ def resolve_whisper_device(device="auto"):
                     if "float16" not in compute_types:
                         cuda_error = "CTranslate2 does not support float16 compute on CUDA"
 
-    if cuda_error is not None and device == "cuda":
-        raise RuntimeError(
-            "CUDA was requested for Faster-Whisper but cannot be used: " + cuda_error + "."
+    if cuda_error is not None:
+        if device == "cuda":
+            raise RuntimeError(
+                "CUDA was requested for Faster-Whisper but cannot be used: " + cuda_error + "."
+            )
+        logger.warning(f"⚠️ {cuda_error}; transcribing on CPU.")
+        return "cpu"
+
+    required_mb = estimate_whisper_vram_mb(model_name)
+    free_mb = get_cuda_free_memory_mb()
+    if free_mb is not None and free_mb < required_mb:
+        if device == "cuda":
+            raise RuntimeError(
+                "CUDA was requested for Faster-Whisper but the GPU does not have enough free "
+                f"memory: {free_mb} MiB free and about {required_mb} MiB are needed for model "
+                f"'{model_name}'. Free the GPU memory or use --whisper-device cpu."
+            )
+        logger.warning(
+            f"⚠️ The GPU has only {free_mb} MiB free and model '{model_name}' needs about "
+            f"{required_mb} MiB; transcribing on CPU."
         )
-    return "cuda" if cuda_error is None else "cpu"
+        return "cpu"
+    return "cuda"
+
+
+def is_cuda_out_of_memory(exc):
+    """
+    Detects a CUDA allocation failure reported by Faster-Whisper or CTranslate2.
+
+    Parameters:
+        exc (Exception): The exception raised while loading or running the model.
+
+    Returns:
+        bool: True when the failure is a CUDA out of memory error.
+    """
+    message = str(exc).lower()
+    markers = (
+        "out of memory",
+        "out_of_memory",
+        "outofmemory",
+        "cublas_status_alloc_failed",
+        "failed to allocate",
+    )
+    return any(marker in message for marker in markers)
+
+
+def write_local_transcript(model_class, model_name, device, compute_type, audio_path, output_path):
+    """
+    Loads a Whisper model, transcribes the audio and writes the timestamped segments.
+
+    Parameters:
+        model_class (type): The WhisperModel class to instantiate.
+        model_name (str): The name of the Faster-Whisper model.
+        device (str): The device to run the model on ("cuda" or "cpu").
+        compute_type (str): The CTranslate2 compute type ("float16" or "int8").
+        audio_path (str): The path to the audio file to transcribe.
+        output_path (str): The path of the transcription file to write.
+
+    Returns:
+        str: The path to the output transcription text file.
+    """
+    model = model_class(model_name, device=device, compute_type=compute_type)
+    segments, _ = model.transcribe(audio_path, beam_size=5)
+    with open(output_path, "w", encoding="utf-8") as out:
+        for seg in segments:
+            start = getattr(seg, "start", None)
+            end = getattr(seg, "end", None)
+            timestamp = f"[{start:.2f} --> {end:.2f}] " if start is not None and end is not None else ""
+            out.write(timestamp + seg.text.strip() + "\n")
+    return output_path
 
 
 def transcript_local(audio_path, model_name=None, device=None):
@@ -404,6 +543,9 @@ def transcript_local(audio_path, model_name=None, device=None):
     The function uses the WhisperModel to transcribe the given audio file and outputs
     the transcription to a text file in the same directory as the audio file. It processes
     the transcription by segments and writes each segment's text to the output file.
+
+    When the device was resolved automatically and CUDA runs out of memory, the
+    transcription is retried on CPU so a busy GPU does not abort the run.
 
     Parameters:
         audio_path (str): The path to the audio file to be transcribed.
@@ -418,21 +560,29 @@ def transcript_local(audio_path, model_name=None, device=None):
     except ImportError as exc:
         raise RuntimeError("Faster-Whisper is not installed; install the project requirements first.") from exc
     model_name = model_name or os.getenv("WHISPER_MODEL", MODEL_LOCAL)
-    device = resolve_whisper_device(device or os.getenv("WHISPER_DEVICE", "auto"))
+    requested_device = device or os.getenv("WHISPER_DEVICE", "auto")
+    resolved_device = resolve_whisper_device(requested_device, model_name)
     logger.info("🧠 Transcribing locally...")
-    compute_type = "float16" if device == "cuda" else "int8"
-    try:
-        modelo = WhisperModel(model_name, device=device, compute_type=compute_type)
-        segments, _ = modelo.transcribe(audio_path, beam_size=5)
-    except Exception as exc:
-        raise RuntimeError(f"Could not load or run Faster-Whisper model '{model_name}': {exc}") from exc
+    compute_type = "float16" if resolved_device == "cuda" else "int8"
     salida = os.path.splitext(audio_path)[0] + "_transcription_local.txt"
-    with open(salida, "w", encoding="utf-8") as out:
-        for seg in segments:
-            start = getattr(seg, "start", None)
-            end = getattr(seg, "end", None)
-            timestamp = f"[{start:.2f} --> {end:.2f}] " if start is not None and end is not None else ""
-            out.write(timestamp + seg.text.strip() + "\n")
+    try:
+        write_local_transcript(WhisperModel, model_name, resolved_device, compute_type, audio_path, salida)
+    except OSError:
+        raise
+    except Exception as exc:
+        if resolved_device == "cuda" and requested_device == "auto" and is_cuda_out_of_memory(exc):
+            logger.warning("⚠️ CUDA ran out of memory; retrying the transcription on CPU...")
+            try:
+                write_local_transcript(WhisperModel, model_name, "cpu", "int8", audio_path, salida)
+            except Exception as cpu_exc:
+                raise RuntimeError(
+                    f"Could not load or run Faster-Whisper model '{model_name}' on CPU: {cpu_exc}"
+                ) from cpu_exc
+            return salida
+        hint = ""
+        if resolved_device == "cuda" and is_cuda_out_of_memory(exc):
+            hint = " Retry with --whisper-device cpu or free the GPU memory."
+        raise RuntimeError(f"Could not load or run Faster-Whisper model '{model_name}': {exc}{hint}") from exc
     return salida
 
 

@@ -208,6 +208,17 @@ not through PyTorch, so PyTorch is not required for GPU transcription:
 - `cuda` fails with an explicit error when CTranslate2 is missing, reports no CUDA
   device, or cannot provide `float16` compute. It never silently falls back to CPU.
 
+Before choosing the device, the free video memory of the GPU is compared with the memory
+needed by the selected model (for example about 2 GB for `small` and about 6 GB for
+`large-v3`). When the GPU is busy, for example because a local LLM server is running,
+`auto` transcribes on CPU right away instead of failing. The check is skipped when the
+free memory cannot be measured.
+
+With `auto`, if the CUDA run fails with an out of memory error (for example when another
+process, such as a local LLM server, already occupies the GPU), the transcription is
+retried on CPU automatically and the run continues. An explicit `--whisper-device cuda`
+keeps failing instead of falling back, and the error suggests `--whisper-device cpu`.
+
 #### `process`
 
 Combined recording, transcription, and summarization.

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The device used for the local transcription is checked before the model is loaded: the free
+  video memory of the GPU is compared with the memory needed by the model, so a busy GPU is
+  detected before the transcription starts
+- Local transcription with `--whisper-device auto` now retries on CPU when CUDA runs out of
+  memory (for example when a local LLM server occupies the GPU), instead of aborting the run
 - LARM provider: summarize transcriptions with a local model served by LARM through its
   OpenAI compatible API (`--model larm`, `--larm-model`)
 - New environment variables: `LARM_BASE_URL`, `LARM_MODEL`, `LARM_TIMEOUT`, `LARM_API_KEY`

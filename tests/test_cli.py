@@ -155,14 +155,16 @@ class CliTests(unittest.TestCase):
         ctranslate2 = types.ModuleType("ctranslate2")
         ctranslate2.get_cuda_device_count = lambda: 1
         ctranslate2.get_supported_compute_types = lambda device: {"float16", "int8_float16"}
-        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}):
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}), \
+                patch.object(cli, "get_cuda_free_memory_mb", return_value=8192):
             self.assertEqual(cli.resolve_whisper_device("cuda"), "cuda")
 
     def test_auto_uses_cuda_when_ctranslate2_supports_it(self):
         ctranslate2 = types.ModuleType("ctranslate2")
         ctranslate2.get_cuda_device_count = lambda: 1
         ctranslate2.get_supported_compute_types = lambda device: {"float16"}
-        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}):
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}), \
+                patch.object(cli, "get_cuda_free_memory_mb", return_value=8192):
             self.assertEqual(cli.resolve_whisper_device("auto"), "cuda")
 
     def test_auto_falls_back_to_cpu_without_cuda(self):
@@ -171,6 +173,60 @@ class CliTests(unittest.TestCase):
         ctranslate2.get_supported_compute_types = lambda device: set()
         with patch.dict(sys.modules, {"ctranslate2": ctranslate2}):
             self.assertEqual(cli.resolve_whisper_device("auto"), "cpu")
+
+    def test_auto_uses_cpu_when_the_gpu_has_not_enough_free_memory(self):
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}), \
+                patch.object(cli, "get_cuda_free_memory_mb", return_value=252):
+            self.assertEqual(cli.resolve_whisper_device("auto", "small"), "cpu")
+
+    def test_cuda_fails_when_the_gpu_has_not_enough_free_memory(self):
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}), \
+                patch.object(cli, "get_cuda_free_memory_mb", return_value=252):
+            with self.assertRaisesRegex(RuntimeError, "not have enough free memory"):
+                cli.resolve_whisper_device("cuda", "small")
+
+    def test_cuda_is_used_when_the_free_memory_cannot_be_measured(self):
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        with patch.dict(sys.modules, {"ctranslate2": ctranslate2}), \
+                patch.object(cli, "get_cuda_free_memory_mb", return_value=None):
+            self.assertEqual(cli.resolve_whisper_device("auto", "small"), "cuda")
+
+    def test_free_memory_is_read_from_the_first_cuda_device(self):
+        output = " 252\n 8192\n"
+
+        class Result:
+            returncode = 0
+            stdout = output
+
+        with patch.object(cli.subprocess, "run", return_value=Result()):
+            self.assertEqual(cli.get_cuda_free_memory_mb(), 252)
+
+    def test_free_memory_is_unknown_when_nvidia_smi_fails(self):
+        class Result:
+            returncode = 1
+            stdout = ""
+
+        with patch.object(cli.subprocess, "run", return_value=Result()):
+            self.assertIsNone(cli.get_cuda_free_memory_mb())
+
+    def test_free_memory_is_unknown_when_nvidia_smi_is_missing(self):
+        with patch.object(cli.subprocess, "run", side_effect=FileNotFoundError()):
+            self.assertIsNone(cli.get_cuda_free_memory_mb())
+
+    def test_vram_estimate_depends_on_the_model(self):
+        self.assertEqual(cli.estimate_whisper_vram_mb("tiny"), 1024)
+        self.assertEqual(cli.estimate_whisper_vram_mb("small"), 2048)
+        self.assertEqual(cli.estimate_whisper_vram_mb("small.en"), 2048)
+        self.assertEqual(cli.estimate_whisper_vram_mb("large-v3"), 6144)
+        self.assertEqual(cli.estimate_whisper_vram_mb("custom-model"), cli.DEFAULT_WHISPER_VRAM_MB)
 
     def test_cuda_transcription_does_not_import_torch(self):
         class Segment:
@@ -197,7 +253,7 @@ class CliTests(unittest.TestCase):
                 "ctranslate2": ctranslate2,
                 "faster_whisper": faster_whisper,
                 "torch": None,
-            }):
+            }), patch.object(cli, "get_cuda_free_memory_mb", return_value=8192):
                 output = cli.transcript_local(audio, "tiny", "cuda")
             with open(output, encoding="utf-8") as transcript:
                 self.assertIn("CUDA text", transcript.read())
@@ -210,6 +266,93 @@ class CliTests(unittest.TestCase):
     def test_local_transcription_rejects_missing_audio(self):
         with self.assertRaises(FileNotFoundError):
             cli.transcript_local("missing.mp3")
+
+    def test_auto_retries_on_cpu_when_cuda_runs_out_of_memory(self):
+        class Segment:
+            start = 0.5
+            end = 1.5
+            text = " CPU text "
+
+        devices = []
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                devices.append(kwargs.get("device"))
+                if kwargs.get("device") == "cuda":
+                    raise RuntimeError("CUDA failed with error out of memory")
+
+            def transcribe(self, path, beam_size):
+                return iter([Segment()]), None
+
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        faster_whisper = types.ModuleType("faster_whisper")
+        faster_whisper.WhisperModel = FakeModel
+        with tempfile.TemporaryDirectory() as directory:
+            audio = os.path.join(directory, "audio.mp3")
+            open(audio, "wb").close()
+            with patch.dict(sys.modules, {
+                "ctranslate2": ctranslate2,
+                "faster_whisper": faster_whisper,
+            }), patch.object(cli, "get_cuda_free_memory_mb", return_value=8192):
+                output = cli.transcript_local(audio, "small", "auto")
+            with open(output, encoding="utf-8") as transcript:
+                self.assertIn("[0.50 --> 1.50] CPU text", transcript.read())
+        self.assertEqual(devices, ["cuda", "cpu"])
+
+    def test_explicit_cuda_does_not_fall_back_to_cpu(self):
+        devices = []
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                devices.append(kwargs.get("device"))
+                raise RuntimeError("CUDA failed with error out of memory")
+
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        faster_whisper = types.ModuleType("faster_whisper")
+        faster_whisper.WhisperModel = FakeModel
+        with tempfile.TemporaryDirectory() as directory:
+            audio = os.path.join(directory, "audio.mp3")
+            open(audio, "wb").close()
+            with patch.dict(sys.modules, {
+                "ctranslate2": ctranslate2,
+                "faster_whisper": faster_whisper,
+            }), patch.object(cli, "get_cuda_free_memory_mb", return_value=8192):
+                with self.assertRaisesRegex(RuntimeError, "CUDA failed with error out of memory"):
+                    cli.transcript_local(audio, "small", "cuda")
+        self.assertEqual(devices, ["cuda"])
+
+    def test_cuda_failure_without_out_of_memory_does_not_retry_on_cpu(self):
+        devices = []
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                devices.append(kwargs.get("device"))
+                raise RuntimeError("CUDA failed with error invalid device")
+
+        ctranslate2 = types.ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: 1
+        ctranslate2.get_supported_compute_types = lambda device: {"float16"}
+        faster_whisper = types.ModuleType("faster_whisper")
+        faster_whisper.WhisperModel = FakeModel
+        with tempfile.TemporaryDirectory() as directory:
+            audio = os.path.join(directory, "audio.mp3")
+            open(audio, "wb").close()
+            with patch.dict(sys.modules, {
+                "ctranslate2": ctranslate2,
+                "faster_whisper": faster_whisper,
+            }), patch.object(cli, "get_cuda_free_memory_mb", return_value=8192):
+                with self.assertRaisesRegex(RuntimeError, "invalid device"):
+                    cli.transcript_local(audio, "small", "auto")
+        self.assertEqual(devices, ["cuda"])
+
+    def test_cuda_out_of_memory_is_detected(self):
+        self.assertTrue(cli.is_cuda_out_of_memory(RuntimeError("CUDA failed with error out of memory")))
+        self.assertTrue(cli.is_cuda_out_of_memory(RuntimeError("CUDA_ERROR_OUT_OF_MEMORY")))
+        self.assertFalse(cli.is_cuda_out_of_memory(RuntimeError("CUDA failed with error invalid device")))
 
 
 if __name__ == "__main__":
